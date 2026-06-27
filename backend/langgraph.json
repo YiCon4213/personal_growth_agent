@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "personal_growth_agent": "./app/agents/graph.py:graph"
+  },
+  "env": ".env"
+}
