@@ -9,6 +9,14 @@
 - 当前后端数据库使用 Docker Postgres + pgvector，默认端口是 `localhost:5433`，不是 `5432`。
 - 当前实现仍是第一阶段学习项目闭环：Agent 回复、RAG embedding、MCP transport 都使用可测试的确定性/本地实现，不依赖真实 LLM。
 
+## 产品策略与改造路线
+
+- 当前固定使用本地单用户 `default_user`，暂不实现注册、登录和用户管理。
+- 核心场景是学习计划、基于专业知识库的健身健康问答，以及由 LLM 判断并调用 MCP 工具的生活助手。
+- 后续目标包括接入真实 LLM、真实 embedding、标准 MCP transport、会话管理、三服务 Docker Compose 和公网部署。
+- 当前实现能力、目标架构、阶段顺序和验收标准见 `docs/CURRENT_STATE_AND_ROADMAP.md`。
+- 开始新的开发会话时，可直接使用 `docs/NEW_SESSION_CONTEXT.md` 中的上下文指令。
+
 ## 当前结构
 
 ```text

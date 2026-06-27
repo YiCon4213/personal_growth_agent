@@ -1,37 +1,31 @@
 # Development Boundaries
 
-This directory is the only writable project area for the new Personal Growth Agent implementation.
+## Repository Boundary
 
-Allowed for new code:
+`personal_growth_agent/` is the independent Git repository and the only project area for ongoing development.
 
-- `personal_growth_agent/backend/`
-- `personal_growth_agent/frontend/`
-- `personal_growth_agent/infra/`
-- `personal_growth_agent/docs/`
+Allowed locations:
 
-Read-only historical reference:
+- `backend/`
+- `frontend/`
+- `infra/`
+- `docs/`
 
-- root `app/`
-- root `main.py`
-- root `langgraph.json`
-- root `pyproject.toml`
+Do not recreate dependencies on the historical parent project or modify files outside this repository.
 
-Current subtask scope:
+## Current Product Boundary
 
-- project skeleton
-- minimal FastAPI health check
-- independent backend dependency file
-- environment variable example
-- README startup and validation instructions
+- The application is local-first and uses the fixed user id `default_user`.
+- Registration, login, authentication, authorization, and multi-user administration are not part of the current phase.
+- The product may be deployed publicly later, so secrets, network boundaries, input validation, auditability, and migration safety must still be designed for deployment.
+- Real LLM and real MCP credentials or endpoints must only be supplied through local environment configuration and must never be committed.
 
-Out of scope for subtask 0:
+## Engineering Boundary
 
-- LangGraph agents
-- chat SSE
-- database and migrations
-- RAG
-- MCP
-- approvals
-- user profile
-- user Skill generation
-- Next.js implementation
+- Preserve the existing FastAPI, LangGraph, Next.js, PostgreSQL, and pgvector architecture unless a documented migration requires otherwise.
+- Keep external integrations behind injectable service interfaces so tests can use fake LLM, embedding, and MCP clients.
+- Do not describe deterministic test implementations as production LLM, semantic embedding, or standards-complete MCP support.
+- Database schema changes for existing volumes require versioned migrations; Docker initialization SQL alone is not an upgrade mechanism.
+- Scope each implementation session to one roadmap phase or one clearly defined vertical slice.
+
+The current status and roadmap are maintained in `docs/CURRENT_STATE_AND_ROADMAP.md`.
