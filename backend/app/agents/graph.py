@@ -97,6 +97,7 @@ def run_supervisor_graph(
     run_id: str,
 
     user_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
 
     rag_collection_ids: list[str] | None = None,
 
@@ -112,6 +113,7 @@ def run_supervisor_graph(
     initial_state: GraphState = {
 
         "message": message,
+        "history": history or [],
 
         "thread_id": thread_id,
 

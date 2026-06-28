@@ -1,6 +1,18 @@
 # Current State and Roadmap
 
-Last updated: 2026-06-27
+Last updated: 2026-06-28
+
+## Documentation Lifecycle
+
+This document is the living source of truth, not a one-time plan. At the end of every phase:
+
+- move completed capabilities from target state to current state;
+- record live integrations that were actually verified and those that remain simulated;
+- update schema, configuration, API, deployment, and known-risk notes;
+- revise the next phase when earlier implementation decisions change its prerequisites;
+- update `docs/NEW_SESSION_CONTEXT.md` before starting the next development session.
+
+When this document conflicts with an old conversation or task breakdown, the verified repository code and the latest version of this document take precedence.
 
 ## Product Goal
 
@@ -27,14 +39,14 @@ The project is expected to support public deployment later. The target delivery 
 
 | Area | Current implementation | Target implementation |
 | --- | --- | --- |
-| LLM | Keyword routing and deterministic response builders; SSE splits a completed response into simulated tokens | DeepSeek-backed reasoning and true token streaming through an injectable LLM service |
-| Learning | Rule-based parsing and plan generation | LLM analysis with validated structured learning-plan output |
-| Fitness | RAG retrieval plus deterministic response text | RAG evidence supplied to the LLM, cited answer, and health safety prompt |
-| Embedding | Stable local hash vectors for tests; `EMBEDDING_MODEL` is currently metadata only | Real multilingual semantic embedding with consistent model and vector dimension |
-| MCP | Simplified HTTP JSON-RPC POST for `tools/list` and `tools/call`; fake transport in tests | Official MCP client lifecycle with stdio and Streamable HTTP; legacy SSE only when needed |
-| Time MCP | Not usable from its `uvx` stdio configuration yet | Launch through an official stdio client and call `get_current_time`/`convert_time` with schema-valid arguments |
+| LLM | General, learning, and grounded fitness answers use the injectable DeepSeek/OpenAI-compatible service. The life agent now sends provider tools and consumes tool_calls; tests inject FakeLLM. | Continue evaluation and prompt hardening; credentialed MCP tool selection remains a live acceptance item. |
+| Learning | DeepSeek generates a Pydantic-validated structured plan, followed by a streamed natural-language answer; deterministic builders remain as test/fallback fixtures outside the production chat path. | Continue evaluation and prompt hardening. |
+| Fitness | An explicit advanced RAG LangGraph fuses dense and BM25 ranks with RRF, applies a relevance gate, and returns at most three evidence chunks; the LLM receives only that evidence and a citation/safety prompt. | Run DashScope and pgvector live acceptance, then build the planned RAG evaluation corpus. |
+| Embedding | Production uses the native DashScope SDK with `text-embedding-v3`, explicit 1024-dimensional dense output, document/query text types, batching, retries, concurrency limits, and content-hash caching. Deterministic vectors exist only in the injected test fake. | Complete a credentialed DashScope live check and pgvector migration/rebuild acceptance. |
+| MCP | Official Python SDK lifecycle with stdio, Streamable HTTP, and legacy SSE; schema validation, command allowlist, audit records, and approval locking are implemented. | Live-test a remote Streamable HTTP server and add production observability during hardening. |
+| Time MCP | uvx mcp-server-time was live-verified through the official stdio client; get_current_time and convert_time both succeeded. | Keep the server local and allowlisted; package availability remains an operational dependency. |
 | Skill | Deterministic summary every 10 user turns | LLM-generated structured reusable preference/decision template, still requiring user approval |
-| Conversation | Threads and messages are stored, but there is no conversation CRUD UI/API and history is not supplied to the graph | Create/list/rename/delete conversations, view history, and load bounded history into LLM context |
+| Conversation | Create/list/detail/rename/delete APIs and frontend navigation are implemented; bounded same-thread history is passed into LangGraph and the LLM. | Add richer search/archival only in a later scoped phase. |
 | Docker | Compose currently starts PostgreSQL only | Frontend, backend, and PostgreSQL/pgvector started with one Compose command |
 
 ## Target Request Flow
@@ -53,9 +65,9 @@ Browser
   -> stream SSE events to the frontend
 ```
 
-## Planned Configuration
+## LLM Configuration
 
-Secrets stay in `backend/.env` and never enter Git. Planned LLM settings are:
+Secrets stay in `backend/.env` and never enter Git. Current LLM settings are:
 
 ```env
 DEEPSEEK_API_KEY=
@@ -69,6 +81,8 @@ The exact model remains configurable. Application startup should fail clearly wh
 
 ### Phase 1: Conversation Foundation and Real LLM
 
+Implementation status (2026-06-27): completed in the application code and covered by FakeLLM automation. A separate DeepSeek live check validated structured output and provider streaming. The local .env must use the OpenAI-compatible base URL https://api.deepseek.com.
+
 - Add conversation create/list/detail/rename/delete APIs and frontend navigation.
 - Keep the fixed `default_user`; do not add authentication.
 - Load a bounded number of previous messages into the graph.
@@ -79,16 +93,61 @@ The exact model remains configurable. Application startup should fail clearly wh
 
 Acceptance: two consecutive messages in one conversation use history; a different conversation is isolated; DeepSeek produces a streamed learning answer; API failure and timeout states are visible and recoverable.
 
-### Phase 2: Production RAG
+### Phase 2: External Embedding API and Advanced RAG Agent
 
-- Introduce an embedding-provider interface and a real multilingual embedding implementation.
-- Keep import and query embeddings on the same model and dimension.
-- Add a versioned migration when vector dimension or schema changes.
-- Re-embed all existing deterministic vectors; never mix hash and semantic vectors.
+Implementation status (2026-06-27): application implementation uses DashScope `text-embedding-v3` at an explicit 1024 dimensions and direct RRF final ranking. Independent reranking was intentionally removed by product decision. Credentialed DashScope calls and a PostgreSQL/pgvector migration run were not performed in this session, so live acceptance remains pending.
+
+The production embedding path calls DashScope through its official Python SDK using `DASHSCOPE_API_KEY` and `DASHSCOPE_BASE_URL`. The deterministic hash provider remains available only as an injected test fake.
+
+Indexing requirements:
+
+- Add an async, batch-capable embedding-provider interface with API key, base URL, model, timeout, retry, and dimension settings.
+- Split imported documents into stable chunks, call the external embedding API in batches, and store vectors in pgvector.
+- Store embedding provider/model/version/dimension and a content hash so stale vectors can be detected and rebuilt.
+- Keep document and query embeddings on exactly the same model and dimension.
+- Add a versioned migration when vector dimension or index schema changes.
+- Re-embed all existing deterministic vectors; never mix hash and semantic vectors in one active index.
 - Add browser multipart upload for Markdown, TXT, and text-based PDF.
-- Build the fitness prompt from retrieved evidence and return citations.
 
-Acceptance: a fitness answer is grounded in relevant uploaded material, unrelated questions do not produce false citations, and existing documents survive restarts.
+The user query, including a history-aware standalone version when needed, is sent to the same embedding API for dense retrieval. The advanced RAG flow is orchestrated as an explicit LangGraph subgraph. The graph exposes the complete pipeline, while `analyze_query` uses conditional routing to skip decomposition or HyDE for simple queries when those steps would add cost without retrieval value:
+
+1. `analyze_query`: determine whether retrieval is required and extract constraints.
+2. `rewrite_query`: rewrite ambiguous or conversational input into a standalone retrieval query.
+3. `decompose_query`: split a multi-part question into focused subqueries.
+4. `generate_hyde`: generate one or more hypothetical answer passages and embed them as additional semantic queries.
+5. `dense_retrieve`: run pgvector cosine retrieval for the original query, rewritten query, subqueries, and HyDE variants.
+6. `sparse_retrieve`: run BM25 keyword retrieval over the same user-scoped chunk corpus.
+7. `deduplicate_candidates`: merge identical chunk ids while retaining provenance and per-route ranks.
+8. `rrf_fuse`: combine dense and sparse ranked lists with Reciprocal Rank Fusion.
+9. `select_context`: keep RRF order, reject candidates without either a BM25 match or the configured minimum dense score, and return the highest-ranked three distinct chunks.
+10. `generate_grounded_answer`: let the LLM answer only from those results, include citations, and clearly report insufficient evidence.
+
+RRF is both the multi-route fusion stage and the final ordering strategy for the current product decision. No independent reranking API is called. A relevance gate based on BM25 participation or minimum dense cosine score prevents RRF from returning arbitrary low-relevance candidates.
+
+Operational requirements:
+
+- Enforce `user_id=default_user` and optional document filters in both dense and sparse retrieval.
+- Keep sparse retrieval behind a replaceable interface. For the single-user three-service architecture, the initial BM25 implementation may use LangChain `BM25Retriever`/`rank_bm25` over database chunks with a cached index and explicit invalidation after document changes; do not describe ordinary PostgreSQL full-text ranking as BM25.
+- Keep per-stage candidate limits configurable; return exactly the final top three evidence chunks to the answer model.
+- Record rewritten queries, subqueries, HyDE text, retrieval route, raw ranks, RRF score, dense score, BM25 participation, model versions, and latency for debugging without logging secrets.
+- Add timeouts, bounded retries, concurrency limits, and batch-size controls for external APIs.
+- Cache embeddings by model plus content hash where safe.
+- Define a deterministic evaluation set covering semantic matches, exact-keyword matches, multi-part questions, conversational questions, and no-answer cases.
+
+Acceptance: uploaded documents are embedded through configured DashScope `text-embedding-v3`; dense and BM25 routes both contribute candidates; RRF ranking and the relevance gate are observable; only the final top three chunks reach the LLM; answers cite relevant evidence; unrelated questions do not produce false citations; existing documents survive restarts; and fake providers keep automated tests offline.
+
+#### Phase 2 verification and residual risks
+
+- Added an injectable async wrapper around the official DashScope SDK. Offline contract tests monkeypatch the SDK and never use real credentials or quota.
+- Added stable chunk/content hashes, provider/model/version/dimension metadata, cache reuse, stale-index filtering, `003_phase2_advanced_rag.sql`, and `004_dashscope_embedding_1024.sql`. Migration 004 clears old vectors, changes pgvector to `vector(1024)`, and requires explicit rebuild.
+- Added browser multipart upload for Markdown, TXT, and text-based PDF with a 10 MiB request limit. Scanned/image-only PDF OCR is intentionally not implemented.
+- Added the explicit conditional RAG subgraph: query analysis, history rewrite, optional decomposition/HyDE, dense retrieval, replaceable in-process Okapi BM25, deduplication, direct RRF ordering, relevance gating, Top 3 selection, and grounded streamed answer preparation.
+- Trace metadata records filters, rewritten/subqueries/HyDE queries, route ranks, RRF/dense scores, BM25 participation, provider model version, selected chunk ids, and latency without secrets.
+- Independent reranking is intentionally absent. RRF candidates need either a BM25 match or dense cosine score at/above `RAG_MIN_DENSE_SCORE` before they may be cited.
+- Automated verification: full backend suite, frontend lint, TypeScript check, and production build pass. Exact current counts are recorded in the implementation handoff rather than treated as a permanent architecture fact.
+- Live verification not completed: no DashScope request was sent, and Docker Desktop was unavailable, so migrations `003`/`004` and PostgreSQL pgvector SQL were not executed against a live database. Compose configuration and migration mounting are verified statically.
+- The application and migration target is `vector(1024)`, matching explicit `text-embedding-v3` output. The private local `.env` must set or remove any old `EMBEDDING_DIMENSION=1536` override before live use.
+- Initial BM25 builds from the user-scoped database corpus per request. This is correct for the current single-user scale but remains a performance risk; a cached index with explicit invalidation can be added when corpus size justifies it.
 
 ### Phase 3: Standards-Compliant MCP and Time Tool
 
@@ -100,6 +159,23 @@ Acceptance: a fitness answer is grounded in relevant uploaded material, unrelate
 - Keep risk inference, approval, audit records, timeout handling, and exactly-once execution protections.
 
 Acceptance: the LLM recognizes a time request, selects the Time tool, provides a valid IANA timezone, executes it, and presents the result; high-risk tools still require approval.
+
+Implementation status (2026-06-28): completed in application code and automated coverage. The official stdio Time integration was live-verified. Credentialed DeepSeek tool selection, remote Streamable HTTP, and PostgreSQL migration 005 live execution remain pending.
+
+#### Phase 3 verification and residual risks
+
+- Replaced the handwritten JSON-RPC POST client with the official MCP Python SDK. Each operation performs transport connection, initialize, tools/list or tools/call, and deterministic session shutdown.
+- Added stdio, Streamable HTTP, and legacy SSE support. Stdio persists command, ordered args, environment overrides, and optional working directory. Environment values are not returned by the API.
+- Added MCP_STDIO_ALLOWED_COMMANDS (default uvx) and MCP_TIMEOUT_SECONDS. Arbitrary stdio commands are rejected.
+- The life agent now uses provider tool calling. Tool aliases come from internal ids; returned arguments are validated locally with JSON Schema before approval or execution.
+- High/medium-risk tools still require approval. Approval uses a row lock and executing state so concurrent approval attempts cannot execute one request twice. Failed approved calls remain auditable.
+- Added migration 005_phase3_mcp_stdio.sql for existing volumes and mounted it for new Compose volumes.
+- Offline automation uses FakeLLM, fake transport, and a local fake MCP stdio subprocess. A monkeypatched contract test verifies the DeepSeek tools/tool_calls shape; no model quota was consumed.
+- Live verification completed: uvx mcp-server-time --local-timezone=Asia/Shanghai exposed get_current_time and convert_time, and both calls succeeded with IANA timezones.
+- Live verification not completed: no credentialed DeepSeek tool-selection request was sent; no remote Streamable HTTP server was available; Docker Desktop was not running, so migration 005 and the pending Phase 2 PostgreSQL migrations were not run against live PostgreSQL. Compose configuration was validated statically.
+- The schema recovery incident and prevention rules are recorded in docs/INCIDENT_2026-06-28_SCHEMA_RECOVERY.md.
+- Detailed Phase 3 purpose, verification rationale, optimization triggers, and live acceptance runbooks are recorded in docs/PHASE3_IMPLEMENTATION_AND_OPERATIONS.md.
+
 
 ### Phase 4: Docker One-Command Startup
 

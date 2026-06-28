@@ -7,8 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from app.agents.graph import run_supervisor_graph
 from app.db.models import Base, MCPServer
 from app.models.schemas import ErrorCode, MCPTransport, RiskLevel
-from app.services.approval_service import ApprovalService
+from app.services.approval_service import ApprovalService, ApprovalServiceError
 from app.services.data_store import DataStore
+from app.services.llm_service import FakeLLMService
 from app.services.mcp_service import MCPService, MCPServiceError
 
 
@@ -106,7 +107,11 @@ def test_mcp_service_blocks_non_low_risk_tool_until_approval_task(store: DataSto
 
 def test_life_agent_can_call_enabled_low_risk_mcp_tool(store: DataStore) -> None:
     server = store.create_mcp_server("default_user", "life-tools", "https://mcp.example.test/rpc")
-    service = MCPService(store.session, transport_client=FakeMCPTransport())
+    service = MCPService(
+        store.session,
+        transport_client=FakeMCPTransport(),
+        llm_service=FakeLLMService(),
+    )
     service.refresh_tools("default_user", server.id)
 
     result = run_supervisor_graph(
@@ -127,7 +132,11 @@ def test_life_agent_can_call_enabled_low_risk_mcp_tool(store: DataStore) -> None
 def test_high_risk_tool_creates_approval_without_execution(store: DataStore) -> None:
     server = store.create_mcp_server("default_user", "life-tools", "https://mcp.example.test/rpc")
     fake_transport = FakeMCPTransport()
-    service = MCPService(store.session, transport_client=fake_transport)
+    service = MCPService(
+        store.session,
+        transport_client=fake_transport,
+        llm_service=FakeLLMService(),
+    )
     service.refresh_tools("default_user", server.id)
 
     result = run_supervisor_graph(
@@ -183,4 +192,9 @@ def test_approval_approve_executes_original_tool(store: DataStore) -> None:
     assert executed.status == "executed"
     assert executed.tool_call_id == tool_call.call_id
     assert tool_call.tool.name == "email.send"
+    assert fake_transport.calls == [("email.send", {"text": "hello"})]
+
+    with pytest.raises(ApprovalServiceError):
+        approval_service.approve(approval.id, user_id="user_1")
+
     assert fake_transport.calls == [("email.send", {"text": "hello"})]

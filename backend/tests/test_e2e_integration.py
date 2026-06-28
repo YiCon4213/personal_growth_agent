@@ -13,6 +13,8 @@ import app.services.mcp_service as mcp_service_module
 from app.core.database import get_session
 from app.db.models import Base, MCPServer
 from app.main import create_app
+from app.services.llm_service import FakeLLMService
+from app.services.embedding_service import FakeEmbeddingProvider
 
 
 class FakeMCPTransport:
@@ -84,22 +86,21 @@ def build_e2e_client(monkeypatch) -> tuple[TestClient, FakeMCPTransport]:
             yield session
 
     fake_transport = FakeMCPTransport()
-    monkeypatch.setattr(chat_module, "create_session_factory", lambda: session_factory)
     monkeypatch.setattr(fitness_module, "create_session_factory", lambda: session_factory)
     monkeypatch.setattr(
         mcp_service_module,
-        "JSONRPCMCPTransportClient",
-        lambda: fake_transport,
+        "OfficialMCPTransportClient",
+        lambda settings=None: fake_transport,
     )
 
-    app = create_app()
+    app = create_app(llm_service=FakeLLMService(), embedding_provider=FakeEmbeddingProvider())
     app.dependency_overrides[get_session] = override_get_session
     return TestClient(app), fake_transport
 
 
 def test_end_to_end_core_flows_share_one_app_and_database(monkeypatch) -> None:
     client, fake_transport = build_e2e_client(monkeypatch)
-    user_id = "e2e_user"
+    user_id = "default_user"
 
     learning_events = stream_chat(
         client,
@@ -133,6 +134,7 @@ def test_end_to_end_core_flows_share_one_app_and_database(monkeypatch) -> None:
     fitness_final = fitness_events[-1]["data"]["payload"]
     assert fitness_final["metadata"]["route"] == "fitness"
     assert fitness_final["sources"][0]["title"] == "减脂训练指南"
+    assert "[1]" in fitness_final["message"]
 
     server_response = client.post(
         "/api/v1/mcp/servers",

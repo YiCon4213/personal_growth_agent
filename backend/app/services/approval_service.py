@@ -104,10 +104,11 @@ class ApprovalService:
     ) -> tuple[ApprovalRequestModel, MCPToolCallResponse]:
         approval = self._get_mutable_pending(approval_id, user_id=user_id)
         now = datetime.now(UTC)
-        approval.status = ApprovalStatus.APPROVED.value
+        approval.status = ApprovalStatus.EXECUTING.value
         approval.approved_by = approver_id or user_id
         approval.decision_reason = reason
         approval.decided_at = now
+        self.session.flush()
         try:
             tool, server, output, call_id = self.mcp_service.call_tool(
                 approval.user_id,
@@ -151,7 +152,7 @@ class ApprovalService:
         return approval
 
     def _get_mutable_pending(self, approval_id: str, *, user_id: str | None) -> ApprovalRequestModel:
-        approval = self.store.get_approval_request(approval_id)
+        approval = self.store.get_approval_request_for_update(approval_id)
         if approval is None:
             raise ApprovalServiceError(ErrorCode.NOT_FOUND, "Approval request was not found.", {"approval_id": approval_id})
         if user_id is not None and approval.user_id != user_id:

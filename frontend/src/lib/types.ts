@@ -11,7 +11,7 @@ export type StreamEventName =
 
 export type RiskLevel = "low" | "medium" | "high";
 export type CandidateStatus = "pending" | "approved" | "rejected";
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "executed" | "failed";
+export type ApprovalStatus = "pending" | "approved" | "executing" | "rejected" | "executed" | "failed";
 
 export interface StreamEvent<TPayload = Record<string, unknown>> {
   event: StreamEventName;
@@ -33,8 +33,22 @@ export interface ChatStreamRequest {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
+  created_at?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  messages: ChatMessage[];
 }
 
 export interface AgentStatusPayload {
@@ -170,8 +184,12 @@ export interface RagDocument {
   title: string;
   source_uri?: string | null;
   source_type?: string | null;
+  embedding_provider: string;
   embedding_model: string;
+  embedding_version: string;
   embedding_dimension: number;
+  content_hash: string;
+  index_status: string;
   chunk_count: number;
   created_at?: string | null;
   updated_at?: string | null;
@@ -183,11 +201,15 @@ export interface MCPServer {
   user_id: string;
   name: string;
   endpoint_url: string;
-  transport: "http" | "sse" | "streamable_http" | "stdio_bridge";
+  transport: "http" | "sse" | "streamable_http" | "stdio" | "stdio_bridge";
   enabled: boolean;
   created_at?: string | null;
   updated_at?: string | null;
   metadata?: Record<string, unknown>;
+  command?: string | null;
+  args: string[];
+  env_keys: string[];
+  working_directory?: string | null;
 }
 
 export interface MCPTool {

@@ -7,10 +7,57 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pydantic import BaseModel, Field
+
 from app.agents.state import AgentStatusRecord, GraphState, render_profile_context_note, render_skill_context_note
 
 Pace = Literal["relaxed", "normal", "intensive"]
 
+
+class LearningPhase(BaseModel):
+    start_week: int = Field(ge=1)
+    end_week: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    focus: str = Field(min_length=1)
+
+
+class WeeklyLearningItem(BaseModel):
+    week: int = Field(ge=1)
+    theme: str = Field(min_length=1)
+    deliverable: str = Field(min_length=1)
+
+
+class LearningPlan(BaseModel):
+    goal: str = Field(min_length=1)
+    level: str = Field(min_length=1)
+    total_weeks: int = Field(ge=1, le=260)
+    weekly_hours: float = Field(gt=0, le=168)
+    daily_hours: float | None = Field(default=None, gt=0, le=24)
+    study_days_per_week: int = Field(ge=1, le=7)
+    preferred_style: str = Field(min_length=1)
+    pace: Pace
+    missing_fields: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    phases: list[LearningPhase] = Field(min_length=1)
+    weekly_plan: list[WeeklyLearningItem] = Field(min_length=1)
+    daily_tasks: list[str] = Field(min_length=1)
+    review_questions: list[str] = Field(min_length=1)
+    adjustment_advice: str = Field(min_length=1)
+
+
+LEARNING_PLAN_SYSTEM_PROMPT = """你是学习规划 Agent。结合有限会话历史，分析目标、基础、期限、可投入时间和偏好，输出可执行且可调整的学习计划。不得虚构用户明确说过的信息；缺失信息写入 missing_fields，并把合理默认值写入 assumptions。所有字段使用中文。"""
+
+
+def learning_messages(history: list[dict[str, str]], message: str) -> list[dict[str, str]]:
+    return [*history, {"role": "user", "content": message}]
+
+
+def learning_response_prompt(plan: LearningPlan) -> str:
+    return (
+        "你是学习规划 Agent。请依据下面已通过 Pydantic 校验的学习计划，用清晰自然的中文回复用户。"
+        "保留关键周期、阶段、每周产出、每日任务、复盘问题和调整建议，不要输出 JSON，也不要声称调用了假模型。\n"
+        f"已校验学习计划：{plan.model_dump_json()}"
+    )
 
 @dataclass(frozen=True)
 class LearningProfile:

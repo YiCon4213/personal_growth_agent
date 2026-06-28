@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, streamChat } from "@/lib/api-client";
-import type { AgentStatusPayload, ApprovalRequest, ChatMessage, MCPServer, MCPTool, ProfileCandidate, RagDocument, RagSourcesPayload, SkillCandidate, StreamEvent, ToolCallPayload, UserProfileItem, UserSkill } from "@/lib/types";
+import type { AgentStatusPayload, ApprovalRequest, ChatMessage, ConversationSummary, MCPServer, MCPTool, ProfileCandidate, RagDocument, RagSourcesPayload, SkillCandidate, StreamEvent, ToolCallPayload, UserProfileItem, UserSkill } from "@/lib/types";
 
 const defaultUserId = "default_user";
 const newId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -17,8 +17,9 @@ function Empty({ text }: { text: string }) {
 }
 
 export default function Home() {
-  const [userId, setUserId] = useState(defaultUserId);
-  const [threadId, setThreadId] = useState("thread_frontend_demo");
+  const userId = defaultUserId;
+  const [threadId, setThreadId] = useState("");
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [draft, setDraft] = useState("我每天晚上 9 点后学习效率高，请记住。帮我规划 Python 学习。");
   const [enabledServerIds, setEnabledServerIds] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -39,6 +40,79 @@ export default function Home() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedServers = useMemo(() => new Set(enabledServerIds), [enabledServerIds]);
+
+  async function selectConversation(id: string) {
+    if (busy || id === threadId) return;
+    try {
+      setError(null);
+      const detail = await api.getConversation(id);
+      setThreadId(id);
+      setMessages(detail.messages);
+      setEvents([]);
+      setStatuses([]);
+      setToolCalls([]);
+      setRag({ sources: [] });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "加载会话失败");
+    }
+  }
+
+  async function newConversation() {
+    if (busy) return;
+    try {
+      const created = await api.createConversation();
+      setConversations((current) => [created, ...current]);
+      setThreadId(created.id);
+      setMessages([]);
+      setEvents([]);
+      setNotice("已新建会话");
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "新建会话失败");
+    }
+  }
+
+  async function removeConversation(event: MouseEvent, id: string) {
+    event.stopPropagation();
+    if (busy || !window.confirm("删除这个会话及其历史消息？")) return;
+    try {
+      await api.deleteConversation(id);
+      const remaining = conversations.filter((item) => item.id !== id);
+      setConversations(remaining);
+      if (id === threadId) {
+        if (remaining[0]) await selectConversation(remaining[0].id);
+        else {
+          const created = await api.createConversation();
+          setConversations([created]);
+          setThreadId(created.id);
+          setMessages([]);
+        }
+      }
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "删除会话失败");
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    void api.listConversations().then(async (items) => {
+      if (!active) return;
+      if (items.length) {
+        const detail = await api.getConversation(items[0].id);
+        if (!active) return;
+        setConversations(items);
+        setThreadId(detail.id);
+        setMessages(detail.messages);
+      } else {
+        const created = await api.createConversation();
+        if (!active) return;
+        setConversations([created]);
+        setThreadId(created.id);
+      }
+    }).catch((exc) => {
+      if (active) setError(exc instanceof Error ? exc.message : "初始化会话失败");
+    });
+    return () => { active = false; };
+  }, []);
 
   const refreshAll = useCallback(async (reportError = true): Promise<boolean> => {
     if (reportError) setError(null);
@@ -85,11 +159,12 @@ export default function Home() {
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
-    if (!message || busy) return;
+    if (!message || busy || !threadId) return;
     setBusy(true); setError(null); setNotice(null); setStatuses([]); setToolCalls([]); setRag({ sources: [] }); setDraft("");
     setMessages((current) => [...current, { id: newId("user"), role: "user", content: message }, { id: newId("assistant"), role: "assistant", content: "" }]);
     try {
-      await streamChat({ message, thread_id: threadId, user_id: userId, enabled_mcp_server_ids: enabledServerIds }, onStreamEvent);
+      await streamChat({ message, thread_id: threadId, enabled_mcp_server_ids: enabledServerIds }, onStreamEvent);
+      setConversations(await api.listConversations());
       setNotice("聊天流已完成");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "发送失败");
@@ -112,12 +187,17 @@ export default function Home() {
   return (
     <main className="app-shell">
       <section className="chat-column">
-        <div className="topbar"><div><p className="eyebrow">Personal Growth Agent</p><h1>统一成长助手</h1></div><button className="icon-button" onClick={() => void refreshAll()} title="刷新">↻</button></div>
-        <div className="config-row"><label>User ID<input value={userId} onChange={(e) => setUserId(e.target.value)} /></label><label>Thread ID<input value={threadId} onChange={(e) => setThreadId(e.target.value)} /></label></div>
+        <div className="topbar"><div><p className="eyebrow">Personal Growth Agent</p><h1>统一成长助手</h1></div><button className="icon-button" onClick={() => void Promise.all([refreshAll(), api.listConversations().then(setConversations)])} title="刷新">↻</button></div>
+        <div className="conversation-bar">
+          <div className="conversation-heading"><strong>会话</strong><span>固定用户：default_user</span><button onClick={() => void newConversation()}>新建会话</button></div>
+          <div className="conversation-list">
+            {conversations.map((item) => <div className={`conversation-item ${item.id === threadId ? "active" : ""}`} key={item.id}><button className="conversation-select" onClick={() => void selectConversation(item.id)}><strong>{item.title}</strong><span>{item.message_count} 条消息</span></button><button className="conversation-delete" aria-label={`删除 ${item.title}`} onClick={(event) => void removeConversation(event, item.id)}>×</button></div>)}
+          </div>
+        </div>
         <div className="messages" aria-live="polite">
           {messages.length ? messages.map((item) => <article className={`message ${item.role}`} key={item.id}><span>{item.role === "user" ? "你" : "助手"}</span><p>{item.content || "..."}</p></article>) : <div className="welcome-panel"><h2>开始一次可验证的对话</h2><p>流式回复、Agent 状态、RAG 来源、工具调用、审批和候选项会同步展示。</p></div>}
         </div>
-        <form className="composer" onSubmit={sendMessage}><textarea rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} /><button disabled={busy}>{busy ? "发送中" : "发送"}</button></form>
+        <form className="composer" onSubmit={sendMessage}><textarea rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} /><button disabled={busy || !threadId}>{busy ? "发送中" : "发送"}</button></form>
         {(notice || error) && <p className={error ? "status error" : "status ok"}>{error || notice}</p>}
       </section>
 
@@ -131,8 +211,8 @@ export default function Home() {
         <nav className="tabs">{(["approvals", "memory", "rag", "mcp"] as const).map((key) => <button className={tab === key ? "active" : ""} key={key} onClick={() => setTab(key)}>{key === "approvals" ? "审批" : key === "memory" ? "画像 / Skill" : key.toUpperCase()}</button>)}</nav>
         {tab === "approvals" && <div className="grid-list">{approvals.length ? approvals.map((a) => <article className="card" key={a.id}><div className="card-head"><strong>{a.tool_name}</strong><span>{a.status} · {a.risk_level}</span></div><p>{a.expected_impact}</p><JsonBlock value={a.arguments} /><div className="actions"><button onClick={() => run(() => api.approveApproval(a.id, userId), "审批已批准")}>批准</button><button className="secondary" onClick={() => run(() => api.rejectApproval(a.id, userId), "审批已拒绝")}>拒绝</button></div></article>) : <Empty text="暂无待审批任务。" />}</div>}
         {tab === "memory" && <div className="two-column"><MemoryPanel title="画像候选" items={profileCandidates} approve={(id) => run(() => api.approveProfileCandidate(id, userId), "画像候选已批准")} reject={(id) => run(() => api.rejectProfileCandidate(id, userId), "画像候选已拒绝")} /><MemoryPanel title="Skill 候选" items={skillCandidates} approve={(id) => run(() => api.approveSkillCandidate(id, userId), "Skill 候选已批准")} reject={(id) => run(() => api.rejectSkillCandidate(id, userId), "Skill 候选已拒绝")} /><ReadOnly title="已确认画像" items={profileItems} action={(id) => run(() => api.disableProfileItem(id, userId), "画像已禁用")} /><ReadOnly title="已启用 Skill" items={skills} action={(id) => run(() => api.disableSkill(id, userId), "Skill 已禁用")} /></div>}
-        {tab === "rag" && <div className="two-column"><RagForm onSubmit={(title, content) => run(() => api.importRagDocument({ user_id: userId, title, content, source_type: "markdown", source_uri: title }), "RAG 文档已导入")} /><section><h2>文档列表</h2>{ragDocs.length ? ragDocs.map((d) => <article className="card" key={d.id}><div className="card-head"><strong>{d.title}</strong><span>{d.chunk_count} chunks</span></div><p>{d.source_uri || d.embedding_model}</p></article>) : <Empty text="暂无 RAG 文档。" />}</section></div>}
-        {tab === "mcp" && <div className="two-column"><McpForm onSubmit={(body) => run(() => api.createMcpServer({ user_id: userId, ...body }), "MCP server 已添加")} /><section><h2>Servers</h2>{servers.length ? servers.map((s) => <article className="card" key={s.id}><div className="card-head"><strong>{s.name}</strong><span>{s.transport}</span></div><p>{s.endpoint_url}</p><label className="check-row"><input type="checkbox" checked={selectedServers.has(s.id)} onChange={(e) => setEnabledServerIds((cur) => e.target.checked ? [...cur, s.id] : cur.filter((id) => id !== s.id))} />启用于下一次聊天</label><button className="secondary" onClick={() => run(() => api.refreshMcpTools(s.id, userId), "工具列表已刷新")}>刷新工具</button></article>) : <Empty text="暂无 MCP server。" />}<h2>Tools</h2>{tools.length ? tools.map((t) => <article className="card" key={t.id}><div className="card-head"><strong>{t.name}</strong><span>{t.risk_level}</span></div><p>{t.description || t.server_id}</p></article>) : <Empty text="暂无 MCP tools。" />}</section></div>}
+        {tab === "rag" && <div className="two-column"><RagForm onSubmit={(title, content, file) => run(() => file ? api.uploadRagDocument(file, title) : api.importRagDocument({ user_id: userId, title, content, source_type: "markdown", source_uri: title }), "RAG 文档已导入")} /><section><h2>文档列表</h2>{ragDocs.length ? ragDocs.map((d) => <article className="card" key={d.id}><div className="card-head"><strong>{d.title}</strong><span>{d.chunk_count} chunks</span></div><p>{d.source_uri || d.embedding_model}</p></article>) : <Empty text="暂无 RAG 文档。" />}</section></div>}
+        {tab === "mcp" && <div className="two-column"><McpForm onSubmit={(body) => run(() => api.createMcpServer({ user_id: userId, ...body }), "MCP server 已添加")} /><section><h2>Servers</h2>{servers.length ? servers.map((s) => <article className="card" key={s.id}><div className="card-head"><strong>{s.name}</strong><span>{s.transport}</span></div><p>{s.transport === "stdio" ? `${s.command} ${(s.args || []).join(" ")}` : s.endpoint_url}</p><label className="check-row"><input type="checkbox" checked={selectedServers.has(s.id)} onChange={(e) => setEnabledServerIds((cur) => e.target.checked ? [...cur, s.id] : cur.filter((id) => id !== s.id))} />启用于下一次聊天</label><button className="secondary" onClick={() => run(() => api.refreshMcpTools(s.id, userId), "工具列表已刷新")}>刷新工具</button></article>) : <Empty text="暂无 MCP server。" />}<h2>Tools</h2>{tools.length ? tools.map((t) => <article className="card" key={t.id}><div className="card-head"><strong>{t.name}</strong><span>{t.risk_level}</span></div><p>{t.description || t.server_id}</p></article>) : <Empty text="暂无 MCP tools。" />}</section></div>}
       </section>
 
       <section className="event-log"><h2>SSE 事件</h2>{events.length ? events.map((e, i) => <details key={`${e.run_id}-${i}`}><summary>{e.event} · {new Date(e.timestamp).toLocaleTimeString()}</summary><JsonBlock value={e.payload} /></details>) : <Empty text="暂无事件。" />}</section>
@@ -148,10 +228,37 @@ function ReadOnly({ title, items, action }: { title: string; items: Array<UserPr
   return <section><h2>{title}</h2>{items.length ? items.map((item) => <article className="card" key={item.id}><div className="card-head"><strong>{"title" in item ? item.title : item.category}</strong><span>{"enabled" in item ? (item.enabled ? "enabled" : "disabled") : item.status}</span></div><p>{item.content}</p><button className="secondary" onClick={() => action(item.id)}>禁用</button></article>) : <Empty text={`暂无${title}。`} />}</section>;
 }
 
-function RagForm({ onSubmit }: { onSubmit: (title: string, content: string) => void }) {
-  return <form className="stack-form" onSubmit={(e) => { e.preventDefault(); const data = new FormData(e.currentTarget); onSubmit(String(data.get("title") || ""), String(data.get("content") || "")); }}><h2>导入文档</h2><input name="title" placeholder="标题" /><textarea name="content" rows={8} placeholder="Markdown 或 TXT 内容" /><button>导入</button></form>;
+function RagForm({ onSubmit }: { onSubmit: (title: string, content: string, file: File | null) => void }) {
+  return <form className="stack-form" onSubmit={(e) => { e.preventDefault(); const data = new FormData(e.currentTarget); const value = data.get("file"); onSubmit(String(data.get("title") || ""), String(data.get("content") || ""), value instanceof File && value.size ? value : null); }}><h2>导入文档</h2><input name="title" placeholder="标题（可选）" /><input name="file" type="file" accept=".md,.markdown,.txt,.pdf,text/plain,text/markdown,application/pdf" /><textarea name="content" rows={8} placeholder="或直接粘贴 Markdown / TXT 内容" /><button>导入</button></form>;
 }
 
-function McpForm({ onSubmit }: { onSubmit: (body: { name: string; endpoint_url: string; transport: MCPServer["transport"]; enabled: boolean }) => void }) {
-  return <form className="stack-form" onSubmit={(e) => { e.preventDefault(); const data = new FormData(e.currentTarget); onSubmit({ name: String(data.get("name") || ""), endpoint_url: String(data.get("endpoint_url") || ""), transport: String(data.get("transport") || "http") as MCPServer["transport"], enabled: true }); }}><h2>添加 Server</h2><input name="name" placeholder="名称" /><input name="endpoint_url" placeholder="http://127.0.0.1:9000/mcp" /><select name="transport" defaultValue="http"><option value="http">HTTP</option><option value="sse">SSE</option><option value="streamable_http">Streamable HTTP</option></select><button>添加</button></form>;
+function McpForm({ onSubmit }: { onSubmit: (body: { name: string; endpoint_url: string; transport: MCPServer["transport"]; enabled: boolean; command?: string; args?: string[]; working_directory?: string }) => void }) {
+  return <form className="stack-form" onSubmit={(e) => {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const transport = String(data.get("transport") || "streamable_http") as MCPServer["transport"];
+    const args = String(data.get("args") || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    onSubmit({
+      name: String(data.get("name") || ""),
+      endpoint_url: String(data.get("endpoint_url") || ""),
+      transport,
+      enabled: true,
+      command: String(data.get("command") || "") || undefined,
+      args,
+      working_directory: String(data.get("working_directory") || "") || undefined,
+    });
+  }}>
+    <h2>添加 Server</h2>
+    <input name="name" placeholder="名称（例如 Time）" required />
+    <select name="transport" defaultValue="streamable_http">
+      <option value="streamable_http">Streamable HTTP</option>
+      <option value="stdio">stdio</option>
+      <option value="sse">SSE（legacy）</option>
+    </select>
+    <input name="endpoint_url" placeholder="HTTP: http://127.0.0.1:9000/mcp" />
+    <input name="command" placeholder="stdio command（例如 uvx）" />
+    <textarea name="args" placeholder={"stdio 参数，每行一个\nmcp-server-time\n--local-timezone=Asia/Shanghai"} />
+    <input name="working_directory" placeholder="可选工作目录" />
+    <button>添加</button>
+  </form>;
 }

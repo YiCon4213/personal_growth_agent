@@ -16,7 +16,7 @@ def make_store() -> DataStore:
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     return DataStore(
         session=session_factory(),
-        settings=Settings(database_url="sqlite+pysqlite:///:memory:"),
+        settings=Settings(database_url="sqlite+pysqlite:///:memory:", embedding_dimension=1024),
     )
 
 
@@ -79,4 +79,4 @@ def test_data_store_can_write_and_read_required_metadata_objects() -> None:
     assert [item.id for item in store.list_skills("user_1")] == [skill.id]
     assert [item.id for item in store.list_mcp_servers("user_1")] == [mcp_server.id]
     assert [item.id for item in store.list_rag_documents("user_1")] == [rag_document.id]
-    assert rag_document.embedding_dimension == 1536
+    assert rag_document.embedding_dimension == 1024

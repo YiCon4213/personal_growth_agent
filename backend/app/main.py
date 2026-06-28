@@ -13,6 +13,7 @@ from app.api.v1.approvals import router as approvals_router
 from app.api.v1.chat import build_stream_event, format_sse, router as chat_router
 
 from app.api.v1.contracts import router as contracts_router
+from app.api.v1.conversations import router as conversations_router
 
 from app.api.v1.health import router as health_router
 
@@ -26,12 +27,14 @@ from app.api.v1.skills import router as skills_router
 from app.core.config import get_settings
 
 from app.models.schemas import ErrorCode, ErrorResponse, StreamEventType
+from app.services.llm_service import LLMService
+from app.services.embedding_service import EmbeddingProvider
 
 
 
 
 
-def create_app() -> FastAPI:
+def create_app(*, llm_service: LLMService | None = None, embedding_provider: EmbeddingProvider | None = None) -> FastAPI:
 
     settings = get_settings()
 
@@ -46,6 +49,9 @@ def create_app() -> FastAPI:
     )
 
 
+
+    app.state.llm_service = llm_service
+    app.state.embedding_provider = embedding_provider
 
     @app.exception_handler(RequestValidationError)
 
@@ -112,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix=settings.api_v1_prefix)
 
     app.include_router(contracts_router, prefix=settings.api_v1_prefix)
+    app.include_router(conversations_router, prefix=settings.api_v1_prefix)
 
     app.include_router(health_router, prefix=settings.api_v1_prefix)
 

@@ -11,6 +11,10 @@ services:
     volumes:
       - personal_growth_agent_postgres_data:/var/lib/postgresql/data
       - ./migrations/001_init_pgvector.sql:/docker-entrypoint-initdb.d/001_init_pgvector.sql:ro
+      - ./migrations/002_phase1_conversations.sql:/docker-entrypoint-initdb.d/002_phase1_conversations.sql:ro
+      - ./migrations/003_phase2_advanced_rag.sql:/docker-entrypoint-initdb.d/003_phase2_advanced_rag.sql:ro
+      - ./migrations/004_dashscope_embedding_1024.sql:/docker-entrypoint-initdb.d/004_dashscope_embedding_1024.sql:ro
+      - ./migrations/005_phase3_mcp_stdio.sql:/docker-entrypoint-initdb.d/005_phase3_mcp_stdio.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U personal_growth_agent -d personal_growth_agent"]
       interval: 5s

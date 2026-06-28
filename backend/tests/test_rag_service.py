@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings
 from app.db.models import Base, RagChunk
+from app.services.embedding_service import FakeEmbeddingProvider
 from app.services.rag_service import FitnessRagService, split_text_into_chunks
 
 
@@ -13,6 +14,7 @@ def make_service() -> FitnessRagService:
     session = session_factory()
     return FitnessRagService(
         session=session,
+        embedding_provider=FakeEmbeddingProvider(64, "local-test-embedding"),
         settings=Settings(
             database_url="sqlite+pysqlite:///:memory:",
             embedding_dimension=64,
@@ -32,7 +34,7 @@ def test_import_text_document_writes_chunks_and_embeddings() -> None:
     service = make_service()
 
     document = service.import_text_document(
-        user_id="user_1",
+        user_id="default_user",
         title="健身基础",
         content="力量训练要逐步加量。\n\n减脂训练可以结合力量和有氧。",
         source_uri="fitness.md",
@@ -50,7 +52,7 @@ def test_import_text_document_writes_chunks_and_embeddings() -> None:
 def test_search_returns_sources_with_relevance() -> None:
     service = make_service()
     document = service.import_text_document(
-        user_id="user_1",
+        user_id="default_user",
         title="减脂训练指南",
         content="减脂训练建议每周进行力量训练，并结合适量有氧。动作标准优先于重量。",
         source_uri="fitness.md",
@@ -58,7 +60,7 @@ def test_search_returns_sources_with_relevance() -> None:
     )
     service.session.commit()
 
-    result = service.search(user_id="user_1", query="减脂力量训练", top_k=2, min_relevance=0.0)
+    result = service.search(user_id="default_user", query="减脂力量训练", top_k=2, min_relevance=0.0)
 
     assert result.no_match_reason is None
     assert len(result.sources) == 1
@@ -71,7 +73,7 @@ def test_search_returns_sources_with_relevance() -> None:
 def test_search_no_match_does_not_fabricate_sources() -> None:
     service = make_service()
 
-    result = service.search(user_id="user_1", query="减脂", top_k=2, min_relevance=0.0)
+    result = service.search(user_id="default_user", query="减脂", top_k=2, min_relevance=0.0)
 
     assert result.sources == []
-    assert result.no_match_reason == "No matching fitness knowledge chunks were found."
+    assert result.no_match_reason == "No sufficiently relevant fitness knowledge evidence was found."

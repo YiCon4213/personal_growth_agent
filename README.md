@@ -7,7 +7,7 @@
 - 新代码只能写入 `personal_growth_agent/`。
 - 不修改旧 `app/`、根目录旧 `main.py`、根目录旧 `langgraph.json`、根目录旧 `pyproject.toml`。
 - 当前后端数据库使用 Docker Postgres + pgvector，默认端口是 `localhost:5433`，不是 `5432`。
-- 当前实现仍是第一阶段学习项目闭环：Agent 回复、RAG embedding、MCP transport 都使用可测试的确定性/本地实现，不依赖真实 LLM。
+- Phase 1-3 application implementations are present. RAG uses DashScope text-embedding-v3 at 1024 dimensions; MCP uses the official SDK and tests inject offline fakes.
 
 ## 产品策略与改造路线
 
@@ -37,7 +37,7 @@ personal_growth_agent/
     src/               # Next.js/React/TypeScript 前端源码
   infra/
     docker-compose.yml
-    migrations/001_init_pgvector.sql
+    migrations/001_init_pgvector.sql ... 005_phase3_mcp_stdio.sql
   docs/
 ```
 
@@ -93,9 +93,10 @@ personal_growth_agent/infra/migrations/001_init_pgvector.sql
 RAG：
 
 - `POST /api/v1/rag/documents`
-- `POST /api/v1/rag/documents/import-file`
-- `GET /api/v1/rag/documents?user_id=default_user`
+- `POST /api/v1/rag/documents/upload` (multipart Markdown/TXT/text-based PDF)
+- `GET /api/v1/rag/documents`
 - `POST /api/v1/rag/search`
+- `POST /api/v1/rag/documents/rebuild-index`
 
 MCP：
 
@@ -180,3 +181,65 @@ personal_growth_agent/backend/tests/test_e2e_integration.py
 3. 启动前端 `npm run dev`。
 4. 在前端依次验证学习规划、导入 RAG 文档后的健身问答、MCP server 管理、审批、画像候选批准、10 轮 Skill 候选批准。
 5. 如未配置真实 MCP server，可先依赖自动化端到端测试验证 MCP/审批契约。
+
+## Phase 1 配置与迁移
+
+真实聊天使用 `backend/.env` 中的 `DEEPSEEK_API_KEY`、`LLM_BASE_URL` 和 `LLM_MODEL`。OpenAI-compatible 客户端的 base URL 应为 `https://api.deepseek.com`，不要使用 Anthropic 路径。
+
+已有 PostgreSQL 数据卷升级时执行版本化迁移：
+
+```powershell
+Get-Content infra/migrations/002_phase1_conversations.sql | docker compose -f infra/docker-compose.yml exec -T postgres psql -U personal_growth_agent -d personal_growth_agent
+```
+
+迁移会把历史上为空的 thread 用户统一为固定单用户 `default_user`，并补齐空标题；本阶段没有新增表或列。
+
+## Phase 2 DashScope RAG configuration and migration
+
+Production document and query vectors use the official DashScope Python SDK with `text-embedding-v3`, explicit `dimension=1024`, `output_type="dense"`, and distinct `text_type="document"` / `text_type="query"` values. Final evidence order comes directly from RRF; no independent Rerank API is configured or called.
+
+Configure these values in `backend/.env`:
+
+```env
+DASHSCOPE_API_KEY=
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+EMBEDDING_MODEL=text-embedding-v3
+EMBEDDING_MODEL_VERSION=v3-1024-dense
+EMBEDDING_DIMENSION=1024
+```
+
+If the private `.env` still contains the old `EMBEDDING_DIMENSION=1536`, change it to `1024` or remove that override. Native `/api/v1` and an existing `/compatible-mode/v1` Base URL are both accepted; the provider normalizes the latter for the SDK. Never commit `.env`.
+
+Existing PostgreSQL volumes must apply migrations 003 and 004 in order if they have not already done so:
+
+```powershell
+Get-Content infra/migrations/003_phase2_advanced_rag.sql | docker compose -f infra/docker-compose.yml exec -T postgres psql -U personal_growth_agent -d personal_growth_agent
+Get-Content infra/migrations/004_dashscope_embedding_1024.sql | docker compose -f infra/docker-compose.yml exec -T postgres psql -U personal_growth_agent -d personal_growth_agent
+```
+
+Migration 004 marks documents stale, clears incompatible vectors, changes the column to `vector(1024)`, and recreates the cosine index. Rebuild after configuring DashScope:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/api/v1/rag/documents/rebuild-index
+```
+
+Rebuild sends stored chunks to DashScope and can consume quota. Automated tests monkeypatch the SDK and do not use `DASHSCOPE_API_KEY`. Credentialed DashScope and live PostgreSQL migration verification remain pending.
+
+## Phase 3 MCP and Time configuration
+
+Production MCP clients use the official Python SDK. Supported transports are stdio, streamable_http, and legacy sse. Local stdio commands must appear in MCP_STDIO_ALLOWED_COMMANDS; the default is uvx.
+
+Create a local Time server by POSTing this shape to /api/v1/mcp/servers:
+
+- user_id: default_user
+- name: Time
+- endpoint_url: empty string
+- transport: stdio
+- command: uvx
+- args: ["mcp-server-time", "--local-timezone=Asia/Shanghai"]
+- env: {}
+- enabled: true
+
+Then call POST /api/v1/mcp/servers/{id}/refresh-tools?user_id=default_user and enable that server id in chat requests. The life agent sends MCP definitions through provider tool calling and validates returned arguments against the advertised JSON Schema before execution or approval.
+
+Existing PostgreSQL volumes must apply infra/migrations/005_phase3_mcp_stdio.sql. The Time stdio server was live-verified locally for both get_current_time and convert_time. Credentialed DeepSeek tool selection and remote Streamable HTTP remain unverified.

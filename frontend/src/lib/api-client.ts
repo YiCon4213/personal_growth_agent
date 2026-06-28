@@ -1,6 +1,8 @@
 import type {
   ApprovalRequest,
   ChatStreamRequest,
+  ConversationDetail,
+  ConversationSummary,
   MCPServer,
   MCPTool,
   ProfileCandidate,
@@ -51,6 +53,29 @@ export async function postJson<T>(path: string, body: unknown, params?: Record<s
   );
 }
 
+export async function postForm<T>(path: string, body: FormData) {
+  return parseJsonResponse<T>(
+    await fetch(url(path), {
+      method: "POST",
+      body
+    })
+  );
+}
+
+export async function patchJson<T>(path: string, body: unknown) {
+  return parseJsonResponse<T>(
+    await fetch(url(path), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+  );
+}
+
+export async function deleteVoid(path: string) {
+  const response = await fetch(url(path), { method: "DELETE" });
+  if (!response.ok) await parseJsonResponse(response);
+}
 export async function deleteJson<T>(path: string, params?: Record<string, string | number | boolean | undefined | null>) {
   return parseJsonResponse<T>(await fetch(url(path, params), { method: "DELETE" }));
 }
@@ -102,6 +127,11 @@ export async function streamChat(request: ChatStreamRequest, onEvent: (event: St
 }
 
 export const api = {
+  listConversations: () => getJson<ConversationSummary[]>("/conversations"),
+  getConversation: (id: string) => getJson<ConversationDetail>(`/conversations/${id}`),
+  createConversation: (title?: string) => postJson<ConversationDetail>("/conversations", { title }),
+  renameConversation: (id: string, title: string) => patchJson<ConversationSummary>(`/conversations/${id}`, { title }),
+  deleteConversation: (id: string) => deleteVoid(`/conversations/${id}`),
   listApprovals: (userId: string) => getJson<ApprovalRequest[]>("/approvals", { user_id: userId }),
   approveApproval: (id: string, userId: string) => postJson(`/approvals/${id}/approve`, { user_id: userId, approver_id: userId }),
   rejectApproval: (id: string, userId: string) => postJson(`/approvals/${id}/reject`, { user_id: userId, reason: "Rejected in frontend" }),
@@ -121,9 +151,15 @@ export const api = {
   listRagDocuments: (userId: string) => getJson<RagDocument[]>("/rag/documents", { user_id: userId }),
   importRagDocument: (body: { user_id: string; title: string; content: string; source_uri?: string; source_type?: string }) =>
     postJson<RagDocument>("/rag/documents", body),
+  uploadRagDocument: (file: File, title?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (title) form.append("title", title);
+    return postForm<RagDocument>("/rag/documents/upload", form);
+  },
 
   listMcpServers: (userId: string) => getJson<MCPServer[]>("/mcp/servers", { user_id: userId }),
-  createMcpServer: (body: { user_id: string; name: string; endpoint_url: string; transport: MCPServer["transport"]; enabled: boolean }) =>
+  createMcpServer: (body: { user_id: string; name: string; endpoint_url: string; transport: MCPServer["transport"]; enabled: boolean; command?: string; args?: string[]; working_directory?: string }) =>
     postJson<MCPServer>("/mcp/servers", body),
   refreshMcpTools: (serverId: string, userId: string) => postJson(`/mcp/servers/${serverId}/refresh-tools`, null, { user_id: userId }),
   listMcpTools: (userId: string) => getJson<MCPTool[]>("/mcp/tools", { user_id: userId, enabled_only: false })

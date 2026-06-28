@@ -10,7 +10,7 @@ from typing import Any
 
 
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 
@@ -108,6 +108,8 @@ class CandidateStatus(StrEnum):
 
     APPROVED = "approved"
 
+    EXECUTING = "executing"
+
     REJECTED = "rejected"
 
 
@@ -119,6 +121,8 @@ class ApprovalStatus(StrEnum):
     PENDING = "pending"
 
     APPROVED = "approved"
+
+    EXECUTING = "executing"
 
     REJECTED = "rejected"
 
@@ -168,6 +172,8 @@ class MCPTransport(StrEnum):
 
     STREAMABLE_HTTP = "streamable_http"
 
+    STDIO = "stdio"
+
     STDIO_BRIDGE = "stdio_bridge"
 
 
@@ -208,6 +214,8 @@ class Attachment(BaseModel):
 
 class ChatMessage(BaseModel):
 
+    id: str | None = None
+
     role: MessageRole
 
     content: str
@@ -220,11 +228,38 @@ class ChatMessage(BaseModel):
 
 
 
+class ConversationCreateRequest(BaseModel):
+
+    title: str | None = Field(default=None, max_length=200)
+
+
+class ConversationRenameRequest(BaseModel):
+
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ConversationSummary(BaseModel):
+
+    id: str
+
+    title: str
+
+    created_at: datetime
+
+    updated_at: datetime
+
+    message_count: int = 0
+
+
+class ConversationDetail(ConversationSummary):
+
+    messages: list[ChatMessage] = Field(default_factory=list)
+
 class ChatStreamRequest(BaseModel):
 
-    message: str = Field(min_length=1, description="User message for the unified assistant.")
+    message: str = Field(min_length=1, max_length=32000, description="User message for the unified assistant.")
 
-    thread_id: str = Field(min_length=1, description="Stable conversation thread id.")
+    thread_id: str = Field(min_length=1, max_length=80, description="Stable conversation thread id.")
 
     image_url: HttpUrl | None = Field(
 
@@ -236,11 +271,11 @@ class ChatStreamRequest(BaseModel):
 
     attachments: list[Attachment] = Field(default_factory=list)
 
-    enabled_mcp_server_ids: list[str] = Field(default_factory=list)
+    enabled_mcp_server_ids: list[str] = Field(default_factory=list, max_length=50)
 
-    rag_collection_ids: list[str] = Field(default_factory=list)
+    rag_collection_ids: list[str] = Field(default_factory=list, max_length=100)
 
-    user_id: str | None = None
+    user_id: str | None = Field(default=None, description="Deprecated; fixed default_user is always used.")
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -503,14 +538,29 @@ class MCPServerCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=160)
 
-    endpoint_url: str = Field(min_length=1)
+    endpoint_url: str = ""
 
     transport: MCPTransport = MCPTransport.HTTP
 
     enabled: bool = True
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+    command: str | None = Field(default=None, min_length=1, max_length=260)
 
+    args: list[str] = Field(default_factory=list, max_length=50)
+
+    env: dict[str, str] = Field(default_factory=dict)
+
+    working_directory: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_transport_configuration(self) -> "MCPServerCreateRequest":
+        if self.transport in {MCPTransport.STDIO, MCPTransport.STDIO_BRIDGE}:
+            if not self.command:
+                raise ValueError("command is required for stdio MCP servers")
+        elif not self.endpoint_url.strip():
+            raise ValueError("endpoint_url is required for HTTP MCP servers")
+        return self
 
 
 
@@ -534,7 +584,13 @@ class MCPServerResponse(BaseModel):
     updated_at: datetime | None = None
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+    command: str | None = None
 
+    args: list[str] = Field(default_factory=list)
+
+    env_keys: list[str] = Field(default_factory=list)
+
+    working_directory: str | None = None
 
 
 
@@ -704,9 +760,17 @@ class RagDocumentResponse(BaseModel):
 
     source_type: str | None = None
 
+    embedding_provider: str
+
     embedding_model: str
 
+    embedding_version: str
+
     embedding_dimension: int
+
+    content_hash: str
+
+    index_status: str
 
     chunk_count: int
 
@@ -741,6 +805,8 @@ class RagSearchResponse(BaseModel):
     sources: list[RagSource] = Field(default_factory=list)
 
     no_match_reason: str | None = None
+
+    trace: dict[str, Any] = Field(default_factory=dict)
 
 
 

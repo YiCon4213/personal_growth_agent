@@ -1,6 +1,6 @@
 # New Session Context
 
-Copy the instruction below into a new development session and replace the final task placeholder.
+This is a living handoff template, not a permanent snapshot. After every completed phase, update `CURRENT_STATE_AND_ROADMAP.md` and this file before copying the instruction into a new development session. Replace the final task placeholder each time.
 
 ```text
 请先阅读并遵守以下项目文档：
@@ -11,6 +11,8 @@ Copy the instruction below into a new development session and replace the final 
 - backend/.env.example
 - infra/docker-compose.yml
 - 与本次任务直接相关的现有代码和测试
+
+`docs/CURRENT_STATE_AND_ROADMAP.md` 是持续更新的项目事实源。开始任务前必须将文档描述与当前代码、数据库迁移和测试进行核对；如果旧会话内容与最新代码或路线图冲突，以已验证的代码和最新路线图为准。
 
 项目根目录就是 personal_growth_agent/，它是独立 Git 仓库。所有修改只能发生在这个仓库内，不要依赖或修改父目录中的历史项目。
 
@@ -24,23 +26,23 @@ Copy the instruction below into a new development session and replace the final 
 3. 项目后续会部署到公网，因此当前实现也要注意密钥、输入验证、命令执行边界、迁移和可观测性。
 4. 最终需要 frontend、backend、PostgreSQL/pgvector 三服务 Docker Compose 一键启动。
 
-当前真实状态：
+Current verified state:
 
-- FastAPI、Next.js、LangGraph、PostgreSQL/pgvector、SSE、RAG、MCP 元数据/审批、画像和 Skill 的基础闭环已经存在。
-- Agent 回复和 Supervisor 路由仍主要是确定性规则，不是真实 LLM 推理。
-- SSE 当前是把完整模拟回复切分成 token，不是真实模型流式输出。
-- EMBEDDING_MODEL 当前只是元数据；实际 embedding 是 1536 维本地哈希测试向量，不是语义模型。
-- MCP 当前只实现简化 HTTP JSON-RPC POST；stdio_bridge 未实现，SSE/Streamable HTTP 也没有完整 MCP 生命周期。
-- uvx mcp-server-time 属于 stdio MCP，当前不能直接填写到前端 endpoint_url 使用。
-- threads/messages 已落库，但缺少会话 CRUD API、前端会话列表和将历史消息传入 Agent 的能力。
-- Skill 当前每 10 条用户消息用规则整理一次偏好/模板/决策规则，批准后作为文字上下文使用，不是可执行代码。
-- Docker Compose 当前只包含 PostgreSQL。宿主机数据库端口是 localhost:5433；未来后端容器应访问 postgres:5432。
+- Phase 1 conversation CRUD/history and injectable DeepSeek streaming are implemented. FakeLLM automation passes; a prior separate DeepSeek live check was recorded.
+- Phase 2 production embedding uses the official DashScope SDK with `text-embedding-v3`, explicit 1024-dimensional dense output, and separate document/query text types. Automated tests inject FakeEmbedding and monkeypatch DashScope; no real quota is used.
+- The RAG subgraph exposes history rewrite, optional decomposition/HyDE, dense retrieval, real Okapi BM25, deduplication, direct RRF final ordering, a dense/BM25 relevance gate, final Top 3 evidence, and grounded fitness streaming. Independent Rerank was intentionally removed.
+- RAG documents/chunks store provider/model/version/dimension/content hashes and index status. Migration 003 adds metadata; migration `004_dashscope_embedding_1024.sql` clears incompatible vectors and changes pgvector to 1024 dimensions before rebuild.
+- Browser multipart upload supports Markdown, TXT, and text-based PDF with a 10 MiB limit.
+- Credentialed DashScope calls were not verified and no real quota was consumed. Migrations 003/004 and pgvector SQL still require live PostgreSQL verification. A private `.env` must use `EMBEDDING_DIMENSION=1024`, not the old 1536 override.
+- Phase 3 uses the official MCP Python SDK with stdio, Streamable HTTP, and legacy SSE. Provider tool_calls are schema-validated; risky tools retain approval and row-lock exactly-once protection.
+- Time MCP was live-verified through uvx stdio for get_current_time and convert_time. Credentialed DeepSeek tool selection, remote Streamable HTTP, and PostgreSQL migration 005 live execution remain pending.
+- Skill remains a deterministic approved text template, not executable code. Docker Compose still contains PostgreSQL only.
 
 目标改造顺序：
 
-1. 会话 CRUD、历史上下文、真实 DeepSeek LLM 服务和真实 SSE 流式输出。
-2. 真实多语言 embedding、RAG 重建索引、文件上传和基于证据的健身回答。
-3. 官方 MCP SDK、stdio/Streamable HTTP、Time MCP、LLM 工具选择和 schema 参数校验。
+1. Completed: conversation CRUD, bounded history, injectable DeepSeek, and real provider SSE.
+2. Implemented, live acceptance pending: external Embedding API and advanced RAG.
+3. Completed in code: 官方 MCP SDK、stdio/Streamable HTTP、Time MCP、LLM 工具选择和 schema 参数校验；部分 live acceptance 见路线图。
 4. 前后端 Dockerfile、三服务 Compose、一键启动和迁移机制。
 5. 公网部署安全加固；登录和多用户仍放到更后面的独立阶段。
 
@@ -54,7 +56,8 @@ Copy the instruction below into a new development session and replace the final 
 - MCP 高风险工具必须继续经过审批，不允许因为引入 LLM tool calling 而绕过。
 - 本次只实现明确指定的阶段或垂直功能，不顺手实现登录、多用户或其他后续阶段。
 - 完成后运行相关后端测试、前端 lint、TypeScript 检查和生产构建，并说明改动文件、验证方式、未验证项和剩余风险。
+- 每个 Phase 完成后，必须更新 docs/CURRENT_STATE_AND_ROADMAP.md 的当前状态、已完成项、真实验证情况、遗留风险和下一阶段前置条件，并同步更新本文件，避免下一会话使用过期上下文。
 
 本次具体任务：
-[在这里填写，例如：执行 Phase 1，会话管理与 DeepSeek LLM 接入。]
+[Current task: execute Phase 4 frontend/backend/PostgreSQL three-service Docker Compose one-command startup.]
 ```

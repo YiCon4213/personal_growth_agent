@@ -33,6 +33,7 @@ class AgentStatusRecord(TypedDict):
 class GraphState(TypedDict, total=False):
 
     message: str
+    history: list[dict[str, str]]
 
     thread_id: str
 

@@ -30,20 +30,24 @@ def life_agent_node(state: GraphState) -> GraphState:
         }
 
     try:
-        selected = mcp_service.choose_tool(user_id, message, server_ids=list(enabled_server_ids))
+        selected = mcp_service.select_tool(
+            user_id,
+            message,
+            history=state.get("history") or [],
+            server_ids=list(enabled_server_ids),
+        )
         if selected is None:
             return {
-                "response": "生活助手 Agent 已接手，但当前启用的 MCP server 没有可调用的工具。" + profile_note,
+                "response": "生活助手 Agent 已接手，但LLM 判断当前请求不需要调用已启用的 MCP 工具。" + profile_note,
                 "status_records": [
                     {
                         "agent": "life",
                         "status": "completed",
-                        "message": "No MCP tool was available.",
+                        "message": "LLM selected no MCP tool.",
                     }
                 ],
             }
-        tool, server = selected
-        arguments = mcp_service.build_arguments_for_tool(tool, message)
+        tool, server, arguments = selected
         tool_payload = mcp_tool_to_schema(tool, server).model_dump(mode="json")
 
         if tool.risk_level != RiskLevel.LOW.value:

@@ -59,7 +59,10 @@ def approve_request(
         )
         session.commit()
         return ApprovalDecisionResponse(approval=approval_to_schema(approval), tool_call=tool_call)
-    except (ApprovalServiceError, MCPServiceError) as exc:
+    except MCPServiceError as exc:
+        session.commit()
+        raise_approval_http_error(exc)
+    except ApprovalServiceError as exc:
         session.rollback()
         raise_approval_http_error(exc)
     except DatabaseConfigurationError as exc:

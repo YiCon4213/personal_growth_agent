@@ -31,6 +31,10 @@ def to_server_response(server: MCPServer) -> MCPServerResponse:
         created_at=server.created_at,
         updated_at=server.updated_at,
         metadata=server.metadata_json,
+        command=server.command,
+        args=server.args,
+        env_keys=sorted(server.env),
+        working_directory=server.working_directory,
     )
 
 
@@ -56,6 +60,10 @@ def create_mcp_server(request: MCPServerCreateRequest, session: SessionDependenc
             transport=request.transport,
             enabled=request.enabled,
             metadata=request.metadata,
+            command=request.command,
+            args=request.args,
+            env=request.env,
+            working_directory=request.working_directory,
         )
         session.commit()
         return to_server_response(server)

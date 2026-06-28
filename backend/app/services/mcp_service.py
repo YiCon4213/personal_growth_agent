@@ -1,17 +1,26 @@
 from __future__ import annotations
 
-import json
-import socket
-from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-from uuid import uuid4
+import asyncio
+from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from pathlib import Path
+from typing import Any, Protocol, TypeVar
+from urllib.parse import urlparse
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.db.models import MCPServer, MCPTool
 from app.models.schemas import ErrorCode, ErrorResponse, MCPTool as MCPToolSchema, RiskLevel
 from app.services.data_store import DataStore
+from app.services.llm_service import LLMMessage, LLMService, LLMServiceError
 
 
 class MCPServiceError(RuntimeError):
@@ -40,90 +49,30 @@ class MCPTransportClient(Protocol):
         ...
 
 
-class JSONRPCMCPTransportClient:
-    def _post_json_rpc(
-        self,
-        server: MCPServer,
-        method: str,
-        params: dict[str, Any],
-        *,
-        timeout_seconds: float,
-    ) -> dict[str, Any]:
-        if server.transport == "stdio_bridge":
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "Local stdio MCP bridge is reserved but not implemented yet.",
-                {"server_id": server.id, "transport": server.transport},
-            )
+ResultT = TypeVar("ResultT")
 
-        body = json.dumps(
-            {"jsonrpc": "2.0", "id": str(uuid4()), "method": method, "params": params}
-        ).encode("utf-8")
-        request = Request(
-            server.endpoint_url,
-            data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - user-configured MCP endpoint.
-                payload = json.loads(response.read().decode("utf-8"))
-        except socket.timeout as exc:
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server request timed out.",
-                {"server_id": server.id, "method": method, "timeout_seconds": timeout_seconds},
-            ) from exc
-        except HTTPError as exc:
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server returned an HTTP error.",
-                {"server_id": server.id, "method": method, "status_code": exc.code},
-            ) from exc
-        except URLError as exc:
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server connection failed.",
-                {"server_id": server.id, "method": method, "reason": str(exc.reason)},
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server returned invalid JSON.",
-                {"server_id": server.id, "method": method},
-            ) from exc
 
-        if not isinstance(payload, dict):
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server response must be a JSON object.",
-                {"server_id": server.id, "method": method},
-            )
-        if payload.get("error"):
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server returned a JSON-RPC error.",
-                {"server_id": server.id, "method": method, "error": payload["error"]},
-            )
-        result = payload.get("result", payload)
-        if not isinstance(result, dict):
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP server result must be a JSON object.",
-                {"server_id": server.id, "method": method},
-            )
-        return result
+class OfficialMCPTransportClient:
+    """Official MCP SDK client for stdio, Streamable HTTP, and legacy SSE."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
 
     def list_tools(self, server: MCPServer, *, timeout_seconds: float = 10) -> list[dict[str, Any]]:
-        result = self._post_json_rpc(server, "tools/list", {}, timeout_seconds=timeout_seconds)
-        tools = result.get("tools", result.get("data", []))
-        if not isinstance(tools, list):
-            raise MCPServiceError(
-                ErrorCode.EXTERNAL_SERVICE_ERROR,
-                "MCP tools/list response did not contain a tools array.",
-                {"server_id": server.id},
-            )
-        return [tool for tool in tools if isinstance(tool, dict)]
+        async def operation(session: ClientSession) -> list[dict[str, Any]]:
+            items: list[dict[str, Any]] = []
+            cursor: str | None = None
+            while True:
+                result = await session.list_tools(cursor=cursor)
+                items.extend(
+                    tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    for tool in result.tools
+                )
+                cursor = result.nextCursor
+                if not cursor:
+                    return items
+
+        return self._run(server, operation, timeout_seconds)
 
     def call_tool(
         self,
@@ -133,12 +82,115 @@ class JSONRPCMCPTransportClient:
         *,
         timeout_seconds: float = 10,
     ) -> dict[str, Any]:
-        return self._post_json_rpc(
-            server,
-            "tools/call",
-            {"name": tool_name, "arguments": arguments},
-            timeout_seconds=timeout_seconds,
+        async def operation(session: ClientSession) -> dict[str, Any]:
+            result = await session.call_tool(
+                tool_name,
+                arguments=arguments,
+                read_timeout_seconds=timedelta(seconds=timeout_seconds),
+            )
+            return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        output = self._run(server, operation, timeout_seconds)
+        if output.get("isError"):
+            raise MCPServiceError(
+                ErrorCode.EXTERNAL_SERVICE_ERROR,
+                "MCP tool returned an error result.",
+                {"server_id": server.id, "tool_name": tool_name},
+            )
+        return output
+
+    def _run(
+        self,
+        server: MCPServer,
+        operation: Callable[[ClientSession], Awaitable[ResultT]],
+        timeout_seconds: float,
+    ) -> ResultT:
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-client")
+        future = executor.submit(
+            asyncio.run,
+            self._run_session(server, operation, timeout_seconds),
         )
+        try:
+            return future.result(timeout=timeout_seconds + 2)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise MCPServiceError(
+                ErrorCode.EXTERNAL_SERVICE_ERROR,
+                "MCP server request timed out.",
+                {"server_id": server.id, "timeout_seconds": timeout_seconds},
+            ) from exc
+        except MCPServiceError:
+            raise
+        except Exception as exc:
+            raise MCPServiceError(
+                ErrorCode.EXTERNAL_SERVICE_ERROR,
+                "MCP server connection or protocol lifecycle failed.",
+                {"server_id": server.id, "error_type": type(exc).__name__},
+            ) from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    async def _run_session(
+        self,
+        server: MCPServer,
+        operation: Callable[[ClientSession], Awaitable[ResultT]],
+        timeout_seconds: float,
+    ) -> ResultT:
+        async with self._transport(server, timeout_seconds) as (read_stream, write_stream):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                read_timeout_seconds=timedelta(seconds=timeout_seconds),
+            ) as session:
+                await session.initialize()
+                return await operation(session)
+
+    @asynccontextmanager
+    async def _transport(self, server: MCPServer, timeout_seconds: float):
+        if server.transport in {"stdio", "stdio_bridge"}:
+            command = (server.command or "").strip()
+            normalized = Path(command).name.lower()
+            if normalized.endswith(".exe"):
+                normalized = normalized[:-4]
+            if not command or normalized not in self.settings.mcp_stdio_command_allowlist:
+                raise MCPServiceError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "MCP stdio command is not allowed.",
+                    {"server_id": server.id, "command": normalized or None},
+                )
+            parameters = StdioServerParameters(
+                command=command,
+                args=list(server.args or []),
+                env=dict(server.env) if server.env else None,
+                cwd=server.working_directory,
+            )
+            async with stdio_client(parameters) as streams:
+                yield streams
+            return
+
+        parsed = urlparse(server.endpoint_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise MCPServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "MCP HTTP endpoint must be an absolute http(s) URL.",
+                {"server_id": server.id},
+            )
+        if server.transport == "sse":
+            async with sse_client(
+                server.endpoint_url,
+                timeout=timeout_seconds,
+                sse_read_timeout=timeout_seconds,
+            ) as streams:
+                yield streams
+            return
+        if server.transport not in {"http", "streamable_http"}:
+            raise MCPServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "Unsupported MCP transport.",
+                {"server_id": server.id, "transport": server.transport},
+            )
+        async with streamable_http_client(server.endpoint_url) as streams:
+            yield streams[0], streams[1]
 
 
 HIGH_RISK_WORDS = ("delete", "remove", "write", "send", "email", "pay", "order", "calendar", "file")
@@ -149,7 +201,7 @@ def infer_risk_level(tool_name: str, description: str | None, metadata: dict[str
     explicit = metadata.get("risk_level") or metadata.get("risk")
     if explicit in {item.value for item in RiskLevel}:
         return RiskLevel(str(explicit))
-    text = f"{tool_name} {description or ''}".lower()
+    text = f"{tool_name} {description or ""}".lower()
     if any(word in text for word in HIGH_RISK_WORDS):
         return RiskLevel.HIGH
     if any(word in text for word in MEDIUM_RISK_WORDS):
@@ -171,20 +223,49 @@ def mcp_tool_to_schema(tool: MCPTool, server: MCPServer) -> MCPToolSchema:
     )
 
 
+def validate_tool_arguments(tool: MCPTool, arguments: dict[str, Any]) -> None:
+    schema = tool.input_schema or {"type": "object"}
+    try:
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(arguments)
+    except SchemaError as exc:
+        raise MCPServiceError(
+            ErrorCode.EXTERNAL_SERVICE_ERROR,
+            "MCP server published an invalid tool input schema.",
+            {"tool_id": tool.id, "schema_path": list(exc.path)},
+        ) from exc
+    except ValidationError as exc:
+        raise MCPServiceError(
+            ErrorCode.VALIDATION_ERROR,
+            "MCP tool arguments do not match the advertised input schema.",
+            {
+                "tool_id": tool.id,
+                "argument_path": list(exc.absolute_path),
+                "schema_path": list(exc.absolute_schema_path),
+            },
+        ) from exc
+
+
 class MCPService:
     def __init__(
         self,
         session: Session,
         *,
         transport_client: MCPTransportClient | None = None,
+        llm_service: LLMService | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.store = DataStore(session)
-        self.transport_client = transport_client or JSONRPCMCPTransportClient()
+        self.settings = settings or get_settings()
+        self.transport_client = transport_client or OfficialMCPTransportClient(self.settings)
+        self.llm_service = llm_service
 
     def refresh_tools(self, user_id: str, server_id: str) -> list[MCPTool]:
         server = self._get_server_for_user(user_id, server_id)
-        raw_tools = self.transport_client.list_tools(server)
+        raw_tools = self.transport_client.list_tools(
+            server, timeout_seconds=self.settings.mcp_timeout_seconds
+        )
         tools: list[MCPTool] = []
         for raw_tool in raw_tools:
             name = raw_tool.get("name")
@@ -192,7 +273,7 @@ class MCPService:
                 raise MCPServiceError(
                     ErrorCode.EXTERNAL_SERVICE_ERROR,
                     "MCP tool schema is missing a valid name.",
-                    {"server_id": server.id, "tool": raw_tool},
+                    {"server_id": server.id},
                 )
             input_schema = raw_tool.get("inputSchema") or raw_tool.get("input_schema") or {}
             if not isinstance(input_schema, dict):
@@ -201,7 +282,15 @@ class MCPService:
                     "MCP tool input schema must be an object.",
                     {"server_id": server.id, "tool_name": name},
                 )
-            metadata = raw_tool.get("metadata") if isinstance(raw_tool.get("metadata"), dict) else {}
+            try:
+                Draft202012Validator.check_schema(input_schema)
+            except SchemaError as exc:
+                raise MCPServiceError(
+                    ErrorCode.EXTERNAL_SERVICE_ERROR,
+                    "MCP server published an invalid tool input schema.",
+                    {"server_id": server.id, "tool_name": name},
+                ) from exc
+            metadata = raw_tool.get("_meta") if isinstance(raw_tool.get("_meta"), dict) else {}
             description = raw_tool.get("description") if isinstance(raw_tool.get("description"), str) else None
             tools.append(
                 self.store.upsert_mcp_tool(
@@ -230,6 +319,70 @@ class MCPService:
                 pairs.append((tool, server))
         return pairs
 
+    def select_tool(
+        self,
+        user_id: str,
+        message: str,
+        *,
+        history: list[LLMMessage] | None = None,
+        server_ids: list[str] | None = None,
+    ) -> tuple[MCPTool, MCPServer, dict[str, Any]] | None:
+        candidates = list(self.list_tools(user_id, server_ids=server_ids))
+        if not candidates:
+            return None
+        if self.llm_service is None:
+            raise MCPServiceError(
+                ErrorCode.EXTERNAL_SERVICE_ERROR,
+                "LLM tool selection is not configured.",
+            )
+
+        aliases: dict[str, tuple[MCPTool, MCPServer]] = {}
+        tool_definitions: list[dict[str, Any]] = []
+        for tool, server in candidates:
+            alias = f"tool_{tool.id.replace("-", "_")}"
+            aliases[alias] = (tool, server)
+            tool_definitions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": alias,
+                        "description": (
+                            f"MCP tool name: {tool.name}. Server: {server.name}. "
+                            f"{tool.description or ""}"
+                        ).strip(),
+                        "parameters": tool.input_schema or {"type": "object"},
+                    },
+                }
+            )
+        messages = [*(history or []), {"role": "user", "content": message}]
+        try:
+            selection = self.llm_service.select_tool(
+                messages,
+                tool_definitions,
+                system_prompt=(
+                    "你是生活助手的 MCP 工具规划器。只有当工具确实适合用户请求时才调用；"
+                    "参数必须严格符合工具 JSON Schema。不得虚构工具，不得绕过审批。"
+                ),
+            )
+        except LLMServiceError as exc:
+            raise MCPServiceError(
+                ErrorCode.EXTERNAL_SERVICE_ERROR,
+                "LLM MCP tool selection failed.",
+                {"kind": exc.kind},
+            ) from exc
+        if selection is None:
+            return None
+        pair = aliases.get(selection.tool_name)
+        if pair is None:
+            raise MCPServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "LLM selected an unavailable MCP tool.",
+                {"selected_tool": selection.tool_name},
+            )
+        tool, server = pair
+        validate_tool_arguments(tool, selection.arguments)
+        return tool, server, selection.arguments
+
     def call_tool(
         self,
         user_id: str,
@@ -237,7 +390,7 @@ class MCPService:
         arguments: dict[str, Any],
         *,
         thread_id: str | None = None,
-        timeout_seconds: float = 10,
+        timeout_seconds: float | None = None,
         require_approval: bool = True,
     ) -> tuple[MCPTool, MCPServer, dict[str, Any], str]:
         tool = self.store.get_mcp_tool_for_user(user_id, tool_id)
@@ -250,15 +403,17 @@ class MCPService:
                 "MCP tool or server is disabled.",
                 {"tool_id": tool.id, "server_id": server.id},
             )
+        validate_tool_arguments(tool, arguments)
         if require_approval and tool.risk_level != RiskLevel.LOW.value:
             raise MCPServiceError(
                 ErrorCode.APPROVAL_REQUIRED,
                 "MCP tool requires approval before execution.",
                 {"tool_id": tool.id, "risk_level": tool.risk_level},
             )
+        effective_timeout = timeout_seconds or self.settings.mcp_timeout_seconds
         try:
             output = self.transport_client.call_tool(
-                server, tool.name, arguments, timeout_seconds=timeout_seconds
+                server, tool.name, arguments, timeout_seconds=effective_timeout
             )
             call = self.store.create_mcp_tool_call(
                 user_id,
@@ -286,50 +441,6 @@ class MCPService:
                 error_message=exc.message,
             )
             raise
-
-    def choose_tool(
-        self, user_id: str, message: str, *, server_ids: list[str] | None = None
-    ) -> tuple[MCPTool, MCPServer] | None:
-        lower_message = message.lower()
-        candidates = list(self.list_tools(user_id, server_ids=server_ids))
-        if not candidates:
-            return None
-        for tool, server in candidates:
-            if tool.name.lower() in lower_message:
-                return tool, server
-        low_risk = [pair for pair in candidates if pair[0].risk_level == RiskLevel.LOW.value]
-        if low_risk:
-            return low_risk[0]
-        return candidates[0]
-    def choose_low_risk_tool(
-        self, user_id: str, message: str, *, server_ids: list[str] | None = None
-    ) -> tuple[MCPTool, MCPServer] | None:
-        lower_message = message.lower()
-        candidates = [
-            (tool, server)
-            for tool, server in self.list_tools(user_id, server_ids=server_ids)
-            if tool.risk_level == RiskLevel.LOW.value
-        ]
-        if not candidates:
-            return None
-        for tool, server in candidates:
-            if tool.name.lower() in lower_message:
-                return tool, server
-        return candidates[0]
-
-    def build_arguments_for_tool(self, tool: MCPTool, message: str) -> dict[str, Any]:
-        properties = tool.input_schema.get("properties")
-        if not isinstance(properties, dict):
-            return {"query": message}
-        arguments: dict[str, Any] = {}
-        for key, schema in properties.items():
-            if not isinstance(key, str) or not isinstance(schema, dict):
-                continue
-            if key in {"query", "q", "message", "text", "prompt"}:
-                arguments[key] = message
-            elif key in {"location", "city"}:
-                arguments[key] = "当前用户位置"
-        return arguments or {"query": message}
 
     def _get_server_for_user(self, user_id: str, server_id: str) -> MCPServer:
         server = self.store.get_mcp_server(server_id)

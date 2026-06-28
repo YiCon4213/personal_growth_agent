@@ -1,9 +1,37 @@
 import json
 
+from collections.abc import Generator
+
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.core.database import get_session
+from app.db.models import Base
 from app.main import create_app
+from app.services.llm_service import FakeLLMService
+from app.services.embedding_service import FakeEmbeddingProvider
 
+
+def build_test_client(session_factory=None, llm_service=None) -> TestClient:
+    if session_factory is None:
+        engine = create_engine(
+            "sqlite+pysqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            future=True,
+        )
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+    def override_get_session() -> Generator[Session, None, None]:
+        with session_factory() as session:
+            yield session
+
+    app = create_app(llm_service=llm_service or FakeLLMService(), embedding_provider=FakeEmbeddingProvider())
+    app.dependency_overrides[get_session] = override_get_session
+    return TestClient(app)
 
 def parse_sse_events(body: str) -> list[dict]:
     events = []
@@ -21,7 +49,7 @@ def parse_sse_events(body: str) -> list[dict]:
 
 
 def test_chat_stream_returns_structured_sse_events() -> None:
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -59,12 +87,13 @@ def test_chat_stream_returns_structured_sse_events() -> None:
     assert "supervisor" in status_agents
     assert "learning" in status_agents
     assert final_metadata["route"] == "learning"
+    assert "mock" not in final_metadata
     assert final_metadata["learning_plan"]["goal"] == "Python 编程"
     assert final_metadata["learning_plan"]["weekly_plan"]
 
 
 def test_chat_stream_returns_error_event_for_stream_failure() -> None:
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -85,7 +114,7 @@ def test_chat_stream_returns_error_event_for_stream_failure() -> None:
 
 
 def test_chat_stream_validation_error_is_sse_error_event() -> None:
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -108,7 +137,7 @@ def test_chat_stream_validation_error_is_sse_error_event() -> None:
 
 
 def test_chat_stream_exposes_fitness_route_status() -> None:
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -125,10 +154,13 @@ def test_chat_stream_exposes_fitness_route_status() -> None:
     ]
     assert "fitness" in status_agents
     assert events[-1]["data"]["payload"]["metadata"]["route"] == "fitness"
+    assert events[-1]["data"]["payload"]["sources"] == []
+    assert "证据不足" in events[-1]["data"]["payload"]["message"]
+    assert "[1]" not in events[-1]["data"]["payload"]["message"]
 
 
 def test_chat_stream_returns_adjusted_learning_plan() -> None:
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -185,7 +217,7 @@ def test_chat_stream_emits_approval_required_event(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(chat_module, "run_supervisor_graph", fake_run_supervisor_graph)
-    client = TestClient(create_app())
+    client = build_test_client()
 
     with client.stream(
         "POST",
@@ -221,16 +253,15 @@ def test_chat_stream_emits_profile_candidate_and_uses_approved_profile(monkeypat
     )
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-    monkeypatch.setattr(chat_module, "create_session_factory", lambda: session_factory)
 
-    client = TestClient(create_app())
+    client = build_test_client(session_factory)
     with client.stream(
         "POST",
         "/api/v1/chat/stream",
         json={
             "message": "我每天晚上 9 点后学习效率高，请记住。",
             "thread_id": "thread_profile",
-            "user_id": "user_1",
+            "user_id": "default_user",
         },
     ) as response:
         body = response.read().decode()
@@ -244,7 +275,7 @@ def test_chat_stream_emits_profile_candidate_and_uses_approved_profile(monkeypat
 
     with session_factory() as session:
         service = ProfileService(session)
-        service.approve_candidate(candidate["id"], user_id="user_1")
+        service.approve_candidate(candidate["id"], user_id="default_user")
         session.commit()
 
     with client.stream(
@@ -253,14 +284,13 @@ def test_chat_stream_emits_profile_candidate_and_uses_approved_profile(monkeypat
         json={
             "message": "帮我规划 Python 学习",
             "thread_id": "thread_profile_2",
-            "user_id": "user_1",
+            "user_id": "default_user",
         },
     ) as response:
         second_body = response.read().decode()
 
     second_events = parse_sse_events(second_body)
     final_payload = second_events[-1]["data"]["payload"]
-    assert "已参考已确认画像" in final_payload["message"]
     assert final_payload["metadata"]["profile_context"][0]["content"] == candidate["content"]
 
 
@@ -282,9 +312,8 @@ def test_chat_stream_emits_skill_candidate_after_ten_turns_and_uses_approved_ski
     )
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-    monkeypatch.setattr(chat_module, "create_session_factory", lambda: session_factory)
 
-    client = TestClient(create_app())
+    client = build_test_client(session_factory)
     candidate = None
     for index in range(1, 11):
         with client.stream(
@@ -293,7 +322,7 @@ def test_chat_stream_emits_skill_candidate_after_ten_turns_and_uses_approved_ski
             json={
                 "message": f"第 {index} 轮：我想学习 Python 后端，请一步步安排。",
                 "thread_id": "thread_skill",
-                "user_id": "user_1",
+                "user_id": "default_user",
             },
         ) as response:
             body = response.read().decode()
@@ -311,7 +340,7 @@ def test_chat_stream_emits_skill_candidate_after_ten_turns_and_uses_approved_ski
     assert candidate is not None
     with session_factory() as session:
         service = SkillService(session)
-        service.approve_candidate(candidate["id"], user_id="user_1")
+        service.approve_candidate(candidate["id"], user_id="default_user")
         session.commit()
 
     with client.stream(
@@ -320,12 +349,11 @@ def test_chat_stream_emits_skill_candidate_after_ten_turns_and_uses_approved_ski
         json={
             "message": "帮我规划 Python 学习",
             "thread_id": "thread_skill_next",
-            "user_id": "user_1",
+            "user_id": "default_user",
         },
     ) as response:
         second_body = response.read().decode()
 
     second_events = parse_sse_events(second_body)
     final_payload = second_events[-1]["data"]["payload"]
-    assert "已参考已启用 Skill" in final_payload["message"]
     assert final_payload["metadata"]["skill_context"][0]["id"]

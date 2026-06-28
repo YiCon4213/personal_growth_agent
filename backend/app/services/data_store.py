@@ -8,7 +8,7 @@ from typing import Any
 
 
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 
 from sqlalchemy.orm import Session
 
@@ -108,6 +108,22 @@ class DataStore:
 
 
 
+    def list_threads(self, user_id: str) -> Sequence[tuple[Thread, int]]:
+        statement = (
+            select(Thread, func.count(Message.id))
+            .outerjoin(Message, Message.thread_id == Thread.id)
+            .where(Thread.user_id == user_id)
+            .group_by(Thread.id)
+            .order_by(Thread.updated_at.desc(), Thread.created_at.desc())
+        )
+        return self.session.execute(statement).all()
+
+    def delete_thread(self, thread_id: str, *, user_id: str) -> bool:
+        result = self.session.execute(
+            delete(Thread).where(Thread.id == thread_id, Thread.user_id == user_id)
+        )
+        self.session.flush()
+        return bool(result.rowcount)
     def add_message(
 
         self,
@@ -150,11 +166,17 @@ class DataStore:
 
 
 
-    def list_messages(self, thread_id: str) -> Sequence[Message]:
-
-        statement = select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)
-
-        return self.session.scalars(statement).all()
+    def list_messages(self, thread_id: str, *, limit: int | None = None) -> Sequence[Message]:
+        if limit is None:
+            statement = select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)
+            return self.session.scalars(statement).all()
+        statement = (
+            select(Message)
+            .where(Message.thread_id == thread_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(self.session.scalars(statement).all()))
 
 
 
@@ -470,6 +492,14 @@ class DataStore:
 
         metadata: dict[str, Any] | None = None,
 
+        command: str | None = None,
+
+        args: list[str] | None = None,
+
+        env: dict[str, str] | None = None,
+
+        working_directory: str | None = None,
+
     ) -> MCPServer:
 
         transport_value = transport.value if isinstance(transport, MCPTransport) else transport
@@ -487,6 +517,14 @@ class DataStore:
             enabled=enabled,
 
             metadata_json=metadata or {},
+
+            command=command,
+
+            args=args or [],
+
+            env=env or {},
+
+            working_directory=working_directory,
 
         )
 
@@ -733,6 +771,17 @@ class DataStore:
     def get_approval_request(self, approval_id: str) -> ApprovalRequest | None:
 
         return self.session.get(ApprovalRequest, approval_id)
+
+
+
+    def get_approval_request_for_update(self, approval_id: str) -> ApprovalRequest | None:
+
+        statement = (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == approval_id)
+            .with_for_update()
+        )
+        return self.session.scalars(statement).first()
 
 
 

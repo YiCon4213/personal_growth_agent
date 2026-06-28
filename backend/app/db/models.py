@@ -42,7 +42,7 @@ class JsonDict(TypeDecorator[dict[str, Any]]):
 class Vector(UserDefinedType):
     cache_ok = True
 
-    def __init__(self, dimension: int = 1536) -> None:
+    def __init__(self, dimension: int = 1024) -> None:
         self.dimension = dimension
 
     def get_col_spec(self, **kw: Any) -> str:
@@ -175,6 +175,10 @@ class MCPServer(TimestampMixin, Base):
     transport: Mapped[str] = mapped_column(String(40), default=MCPTransport.HTTP.value, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict)
+    command: Mapped[str | None] = mapped_column(String(260))
+    args: Mapped[list[str]] = mapped_column(JsonDict, default=list)
+    env: Mapped[dict[str, str]] = mapped_column(JsonDict, default=dict)
+    working_directory: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_mcp_servers_user_name"),)
 
@@ -245,8 +249,12 @@ class RagDocument(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     source_uri: Mapped[str | None] = mapped_column(Text)
     source_type: Mapped[str | None] = mapped_column(String(60))
+    embedding_provider: Mapped[str] = mapped_column(String(80), nullable=False, default="unknown")
     embedding_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    embedding_version: Mapped[str] = mapped_column(String(80), nullable=False, default="1")
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    index_status: Mapped[str] = mapped_column(String(20), nullable=False, default="ready")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict)
 
@@ -262,8 +270,12 @@ class RagChunk(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    embedding_provider: Mapped[str] = mapped_column(String(80), nullable=False, default="unknown")
     embedding_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    embedding_version: Mapped[str] = mapped_column(String(80), nullable=False, default="1")
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False, default=1024)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JsonDict, default=dict)
 
