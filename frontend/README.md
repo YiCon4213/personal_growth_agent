@@ -39,7 +39,7 @@ $env:BACKEND_URL="http://127.0.0.1:8000"
 
 ## What Is Implemented
 
-- Unified chat page with SSE streaming.
+- Responsive, collapsible three-column chat workspace with SSE streaming and an independently scrolling message viewport.
 - Agent status, RAG sources, MCP tool calls, approval requests, profile candidates, and skill candidates.
 - Centralized API client in `src/lib/api-client.ts`.
 - Basic panels for approvals, profile candidates/items, skill candidates/items, MCP servers/tools, and RAG documents.
