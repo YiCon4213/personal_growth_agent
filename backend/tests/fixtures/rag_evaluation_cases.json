@@ -1,0 +1,7 @@
+[
+  {"name": "semantic_match", "query": "肌肉增长怎么练", "expected_titles": ["增肌指南"]},
+  {"name": "exact_keyword", "query": "RPE 如何使用", "expected_titles": ["强度指南"]},
+  {"name": "multi_part", "query": "增肌怎么练？训练后如何恢复", "expected_titles": ["增肌指南", "恢复指南"]},
+  {"name": "conversational", "query": "这个如何安排？", "history": [{"role": "user", "content": "我想练深蹲"}], "expected_titles": ["深蹲指南"]},
+  {"name": "no_answer", "query": "游泳换气技巧", "expected_titles": []}
+]
