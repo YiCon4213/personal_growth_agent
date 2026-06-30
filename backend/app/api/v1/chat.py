@@ -160,8 +160,29 @@ async def stream_graph_chat(
         skill_service.record_user_message(
             user_id=DEFAULT_USER_ID, thread_id=request.thread_id, message=request.message
         )
+
+        profile_candidates = [
+            profile_candidate_to_schema(candidate).model_dump(mode="json")
+            for candidate in profile_service.extract_candidates_from_message(
+                user_id=DEFAULT_USER_ID,
+                thread_id=request.thread_id,
+                message=request.message,
+            )
+        ]
         thread.updated_at = datetime.now(UTC)
         session.commit()
+
+        # Profile approval must not depend on a successful external LLM, embedding,
+        # or MCP call. Persist and expose candidates before those integrations run.
+        for candidate in profile_candidates:
+            yield _event(
+                StreamEventType.PROFILE_CANDIDATE,
+                request,
+                run_id,
+                ProfileCandidatePayload(
+                    candidate=ProfileCandidate.model_validate(candidate)
+                ).model_dump(mode="json"),
+            )
 
         rag_trace: dict[str, Any] = {}
         rag_service: Any | None = None
@@ -293,14 +314,6 @@ async def stream_graph_chat(
                 TokenPayload(text=reply).model_dump(mode="json"),
             )
 
-        profile_candidates = [
-            profile_candidate_to_schema(candidate).model_dump(mode="json")
-            for candidate in profile_service.extract_candidates_from_message(
-                user_id=DEFAULT_USER_ID,
-                thread_id=request.thread_id,
-                message=request.message,
-            )
-        ]
         skill_service.record_assistant_message(
             user_id=DEFAULT_USER_ID, thread_id=request.thread_id, message=reply
         )
@@ -315,15 +328,6 @@ async def stream_graph_chat(
         thread.updated_at = datetime.now(UTC)
         session.commit()
 
-        for candidate in profile_candidates:
-            yield _event(
-                StreamEventType.PROFILE_CANDIDATE,
-                request,
-                run_id,
-                ProfileCandidatePayload(
-                    candidate=ProfileCandidate.model_validate(candidate)
-                ).model_dump(mode="json"),
-            )
         for candidate in skill_candidates:
             yield _event(
                 StreamEventType.SKILL_CANDIDATE,

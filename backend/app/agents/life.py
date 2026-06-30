@@ -30,6 +30,25 @@ def life_agent_node(state: GraphState) -> GraphState:
         }
 
     try:
+        available_tools = mcp_service.list_tools(
+            user_id,
+            server_ids=list(enabled_server_ids),
+        )
+        if not available_tools:
+            return {
+                "response": (
+                    "生活助手 Agent 已接手，但已启用的 MCP server 尚未发现可用工具。"
+                    "请先在 MCP 面板刷新工具；如果刷新超时，请确认 stdio 命令可用，"
+                    "并检查 MCP_TIMEOUT_SECONDS。"
+                ) + profile_note,
+                "status_records": [
+                    {
+                        "agent": "life",
+                        "status": "failed",
+                        "message": "Enabled MCP servers have no discovered tools.",
+                    }
+                ],
+            }
         selected = mcp_service.select_tool(
             user_id,
             message,

@@ -22,6 +22,7 @@ LEARNING_KEYWORDS = (
 )
 FITNESS_KEYWORDS = (
     "健身",
+    "运动",
     "训练",
     "锻炼",
     "减脂",
@@ -30,6 +31,12 @@ FITNESS_KEYWORDS = (
     "kg",
     "跑步",
     "力量",
+    "肩膀",
+    "肩部",
+    "膝盖",
+    "膝部",
+    "腰痛",
+    "背痛",
     "workout",
     "fitness",
 )

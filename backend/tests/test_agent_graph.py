@@ -14,6 +14,14 @@ def test_supervisor_classifies_fitness_requests() -> None:
     assert classify_route("我现在 75kg，想减脂并安排训练") == "fitness"
 
 
+def test_supervisor_classifies_general_exercise_benefit_as_fitness() -> None:
+    assert classify_route("运动有什么好处") == "fitness"
+
+
+def test_supervisor_classifies_shoulder_pain_as_fitness() -> None:
+    assert classify_route("我的肩膀也有点痛") == "fitness"
+
+
 def test_supervisor_classifies_life_tool_requests() -> None:
     assert classify_route("帮我查天气，并安排今天的学习和运动") == "life"
 

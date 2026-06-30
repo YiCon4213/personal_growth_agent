@@ -1,40 +1,68 @@
-# Infra Boundary
+# Docker Compose Operations
 
-Infrastructure files for the new project live here.
+The Compose stack has three long-running services (`frontend`, `backend`, and `postgres`) plus a one-shot `migrate` job. Run commands from the repository root.
 
-## Local Postgres + pgvector
+## One-command startup
 
-Start the database from this directory:
+1. Copy `backend/.env.example` to the uncommitted `backend/.env`.
+2. Add provider credentials only to `backend/.env`. Keep `EMBEDDING_DIMENSION=1024`.
+3. If the official npm registry is unreachable, set `NPM_REGISTRY` to an approved reachable mirror in the shell or uncommitted `infra/.env`.
+4. Start and wait for the healthy stack:
 
 ```powershell
-cd personal_growth_agent/infra
-docker compose up -d
+docker compose -f infra/docker-compose.yml up --build -d --wait
 ```
 
-Use this backend environment value:
+Open the frontend at `http://localhost:3000`. The backend health endpoint is `http://localhost:8000/api/v1/health`; PostgreSQL is exposed to host development on `localhost:5433`.
+
+The frontend image bakes the internal rewrite target `http://backend:8000`. The backend container uses:
+
+```text
+postgresql+psycopg://personal_growth_agent:...@postgres:5432/personal_growth_agent
+```
+
+Compose defaults are suitable only for local development. Override ports and the database password through an uncommitted `infra/.env` based on `infra/.env.example`. If the password contains URL-reserved characters, provide a correctly percent-encoded `DATABASE_URL` customization before public deployment.
+
+## Migration behavior
+
+The `migrate` job runs after PostgreSQL is healthy and must finish before the backend starts. It:
+
+- discovers numbered SQL files in `infra/migrations/`;
+- serializes runners with a PostgreSQL advisory lock;
+- records name and SHA-256 checksum in `schema_migrations`;
+- refuses changed files that were already recorded;
+- fingerprints legacy schemas so an existing compatible volume is baselined without destructively replaying migration 004.
+
+New and existing volumes therefore use the same migration path. Do not edit an applied migration; add the next numbered file.
+
+To inspect migration logs:
+
+```powershell
+docker compose -f infra/docker-compose.yml logs migrate
+```
+
+`docker compose down` keeps the named database volume. Do not add `--volumes` unless permanent data deletion is intentional.
+
+## Database-only host development
+
+```powershell
+docker compose -f infra/docker-compose.yml up -d postgres --wait
+```
+
+Host processes continue to use:
 
 ```text
 DATABASE_URL=postgresql+psycopg://personal_growth_agent:personal_growth_agent_dev@localhost:5433/personal_growth_agent
 ```
 
-A new empty volume runs migrations `001` through `005` in filename order. Migration `001_init_pgvector.sql`, which enables `pgvector` and creates the initial tables for threads, messages, profile items, skills, MCP server metadata, approvals, RAG document metadata, and vector chunks.
+## Current live verification
 
-`localhost:5433` is for processes running on the host. In the planned three-service Compose deployment, the backend container must connect through the Compose service address `postgres:5432`.
+On 2026-06-28, Phase 4 full-stack acceptance completed successfully:
 
-The initialization SQL only runs automatically for a new empty volume. Existing database volumes require versioned migrations when the schema changes.
+- migrations 002 through 006 ran against a live pgvector PostgreSQL volume, migration 001 was safely baselined, rerun was idempotent, `rag_chunks.embedding` was `vector(1024)`, and migration records survived a PostgreSQL restart;
+- backend and frontend images built successfully after registry connectivity was restored;
+- frontend, backend, and PostgreSQL reported healthy, and the migration job confirmed migrations 001 through 006 were already applied;
+- `http://localhost:3000` returned HTTP 200 and `http://localhost:8000/api/v1/health` returned `status=ok` with `environment=production`;
+- browser use was confirmed by the user.
 
-
-## Existing volume upgrade for Phase 2
-
-```powershell
-Get-Content infra/migrations/003_phase2_advanced_rag.sql | docker compose -f infra/docker-compose.yml exec -T postgres psql -U personal_growth_agent -d personal_growth_agent
-Get-Content infra/migrations/004_dashscope_embedding_1024.sql | docker compose -f infra/docker-compose.yml exec -T postgres psql -U personal_growth_agent -d personal_growth_agent
-```
-
-Migration 003 adds embedding provider/model version/dimension and content-hash metadata. Migration 004 clears incompatible vectors and changes pgvector from 1536 to the DashScope `text-embedding-v3` target of 1024 dimensions. Configure DashScope, start the backend, and call `POST /api/v1/rag/documents/rebuild-index` before expecting legacy documents to participate in retrieval.
-
-## Existing volume upgrade for Phase 3
-
-Run infra/migrations/005_phase3_mcp_stdio.sql against the existing personal_growth_agent database before using stdio servers.
-
-Migration 005 adds stdio command, ordered arguments, environment overrides, and optional working directory to MCP server records. Environment values are stored for process launch but are not returned by the MCP server API.
+Credentialed DashScope/index-rebuild acceptance and remote Streamable HTTP remain separate pending items. Public deployment hardening belongs to Phase 5.

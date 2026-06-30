@@ -1,25 +1,85 @@
+x-backend-build: &backend-build
+  context: ..
+  dockerfile: backend/Dockerfile
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: production
+  DATABASE_URL: postgresql+psycopg://personal_growth_agent:${POSTGRES_PASSWORD:-personal_growth_agent_dev}@postgres:5432/personal_growth_agent
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: personal_growth_agent_postgres
     environment:
       POSTGRES_DB: personal_growth_agent
       POSTGRES_USER: personal_growth_agent
-      POSTGRES_PASSWORD: personal_growth_agent_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-personal_growth_agent_dev}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - personal_growth_agent_postgres_data:/var/lib/postgresql/data
-      - ./migrations/001_init_pgvector.sql:/docker-entrypoint-initdb.d/001_init_pgvector.sql:ro
-      - ./migrations/002_phase1_conversations.sql:/docker-entrypoint-initdb.d/002_phase1_conversations.sql:ro
-      - ./migrations/003_phase2_advanced_rag.sql:/docker-entrypoint-initdb.d/003_phase2_advanced_rag.sql:ro
-      - ./migrations/004_dashscope_embedding_1024.sql:/docker-entrypoint-initdb.d/004_dashscope_embedding_1024.sql:ro
-      - ./migrations/005_phase3_mcp_stdio.sql:/docker-entrypoint-initdb.d/005_phase3_mcp_stdio.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U personal_growth_agent -d personal_growth_agent"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  migrate:
+    image: personal-growth-agent-backend:local
+    build: *backend-build
+    environment: *backend-environment
+    command: ["python", "-m", "app.db.migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: personal-growth-agent-backend:local
+    build: *backend-build
+    env_file:
+      - path: ../backend/.env
+        required: false
+    environment: *backend-environment
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    image: personal-growth-agent-frontend:local
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        BACKEND_URL: http://backend:8000
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    environment:
+      NODE_ENV: production
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
   personal_growth_agent_postgres_data:

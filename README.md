@@ -7,13 +7,13 @@
 - 新代码只能写入 `personal_growth_agent/`。
 - 不修改旧 `app/`、根目录旧 `main.py`、根目录旧 `langgraph.json`、根目录旧 `pyproject.toml`。
 - 当前后端数据库使用 Docker Postgres + pgvector，默认端口是 `localhost:5433`，不是 `5432`。
-- Phase 1-3 application implementations are present. RAG uses DashScope text-embedding-v3 at 1024 dimensions; MCP uses the official SDK and tests inject offline fakes.
+- Phase 1-4 implementations are present. RAG uses DashScope text-embedding-v3 at 1024 dimensions; MCP uses the official SDK; the three-service Compose stack has completed live acceptance.
 
 ## 产品策略与改造路线
 
 - 当前固定使用本地单用户 `default_user`，暂不实现注册、登录和用户管理。
 - 核心场景是学习计划、基于专业知识库的健身健康问答，以及由 LLM 判断并调用 MCP 工具的生活助手。
-- 后续目标包括接入真实 LLM、真实 embedding、标准 MCP transport、会话管理、三服务 Docker Compose 和公网部署。
+- Phase 1-4 已实现；后续重点是尚未完成的外部集成验收与 Phase 5 公网部署安全加固。
 - 当前实现能力、目标架构、阶段顺序和验收标准见 `docs/CURRENT_STATE_AND_ROADMAP.md`。
 - 开始新的开发会话时，可直接使用 `docs/NEW_SESSION_CONTEXT.md` 中的上下文指令。
 
@@ -37,10 +37,25 @@ personal_growth_agent/
     src/               # Next.js/React/TypeScript 前端源码
   infra/
     docker-compose.yml
-    migrations/001_init_pgvector.sql ... 005_phase3_mcp_stdio.sql
+    migrations/001_init_pgvector.sql ... 006_phase4_normalize_legacy_titles.sql
   docs/
 ```
 
+## Docker Compose 一键启动
+
+从仓库根目录复制 `backend/.env.example` 为不提交的 `backend/.env`，按需填写 DeepSeek 和 DashScope 密钥，然后运行：
+
+```powershell
+docker compose -f infra/docker-compose.yml up --build -d --wait
+```
+
+服务地址：
+
+- 前端：`http://localhost:3000`
+- 后端健康检查：`http://localhost:8000/api/v1/health`
+- 宿主机 PostgreSQL：`localhost:5433`
+
+Compose 会先等待 PostgreSQL 健康，再运行带校验和账本的版本化迁移；迁移成功后启动后端，最后启动前端。`docker compose down` 默认保留数据库命名卷。完整配置、旧卷升级语义和当前 live verification 见 `infra/README.md`。
 ## 后端启动
 
 ```powershell
@@ -68,8 +83,7 @@ curl -N -X POST http://127.0.0.1:8000/api/v1/chat/stream `
 启动本地 Postgres + pgvector：
 
 ```powershell
-cd personal_growth_agent/infra
-docker compose up -d
+docker compose -f infra/docker-compose.yml up -d postgres --wait
 ```
 
 默认连接：
@@ -81,7 +95,7 @@ DATABASE_URL=postgresql+psycopg://personal_growth_agent:personal_growth_agent_de
 初始化 SQL：
 
 ```text
-personal_growth_agent/infra/migrations/001_init_pgvector.sql
+The one-shot `migrate` service applies every numbered file in `infra/migrations/` and records it in `schema_migrations`.
 ```
 
 ## 主要 API
@@ -223,7 +237,7 @@ Migration 004 marks documents stale, clears incompatible vectors, changes the co
 curl -X POST http://127.0.0.1:8000/api/v1/rag/documents/rebuild-index
 ```
 
-Rebuild sends stored chunks to DashScope and can consume quota. Automated tests monkeypatch the SDK and do not use `DASHSCOPE_API_KEY`. Credentialed DashScope and live PostgreSQL migration verification remain pending.
+Rebuild sends stored chunks to DashScope and can consume quota. Automated tests monkeypatch the SDK and do not use `DASHSCOPE_API_KEY`. Credentialed DashScope calls and index rebuild were user-confirmed live; migrations and `vector(1024)` were verified during Phase 4.
 
 ## Phase 3 MCP and Time configuration
 
@@ -242,4 +256,4 @@ Create a local Time server by POSTing this shape to /api/v1/mcp/servers:
 
 Then call POST /api/v1/mcp/servers/{id}/refresh-tools?user_id=default_user and enable that server id in chat requests. The life agent sends MCP definitions through provider tool calling and validates returned arguments against the advertised JSON Schema before execution or approval.
 
-Existing PostgreSQL volumes must apply infra/migrations/005_phase3_mcp_stdio.sql. The Time stdio server was live-verified locally for both get_current_time and convert_time. Credentialed DeepSeek tool selection and remote Streamable HTTP remain unverified.
+Existing PostgreSQL volumes must apply infra/migrations/005_phase3_mcp_stdio.sql. The Time stdio server was live-verified locally for both get_current_time and convert_time, and credentialed DeepSeek tool selection was user-confirmed live. Remote Streamable HTTP remains unverified.

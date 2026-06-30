@@ -129,6 +129,31 @@ def test_life_agent_can_call_enabled_low_risk_mcp_tool(store: DataStore) -> None
     assert "工具返回" in result["response"]
 
 
+def test_life_agent_reports_enabled_server_without_discovered_tools(store: DataStore) -> None:
+    server = store.create_mcp_server(
+        "default_user", "empty-life-tools", "https://mcp.example.test/rpc"
+    )
+    service = MCPService(
+        store.session,
+        transport_client=FakeMCPTransport(),
+        llm_service=FakeLLMService(),
+    )
+
+    result = run_supervisor_graph(
+        message="现在几点了？",
+        thread_id="thread_empty_mcp",
+        run_id="run_test",
+        user_id="default_user",
+        enabled_mcp_server_ids=[server.id],
+        mcp_service=service,
+    )
+
+    assert result["route"] == "life"
+    assert "尚未发现可用工具" in result["response"]
+    assert "LLM 判断" not in result["response"]
+    assert result.get("mcp_tool_calls") is None
+
+
 def test_high_risk_tool_creates_approval_without_execution(store: DataStore) -> None:
     server = store.create_mcp_server("default_user", "life-tools", "https://mcp.example.test/rpc")
     fake_transport = FakeMCPTransport()

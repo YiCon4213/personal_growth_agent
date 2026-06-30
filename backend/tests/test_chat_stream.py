@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import get_session
 from app.db.models import Base
 from app.main import create_app
-from app.services.llm_service import FakeLLMService
+from app.services.llm_service import FakeLLMService, LLMServiceError
 from app.services.embedding_service import FakeEmbeddingProvider
 
 
@@ -111,6 +111,38 @@ def test_chat_stream_returns_error_event_for_stream_failure() -> None:
     assert error_data["thread_id"] == "thread_error"
     assert error_data["payload"]["code"] == "internal_error"
     assert error_data["payload"]["message"] == "Chat stream failed."
+
+
+def test_profile_candidate_is_persisted_and_emitted_before_llm_failure() -> None:
+    class FailingLLMService(FakeLLMService):
+        async def stream_text(self, messages, *, system_prompt):
+            if False:
+                yield ""
+            raise LLMServiceError("provider unavailable", kind="provider")
+
+    client = build_test_client(llm_service=FailingLLMService())
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/stream",
+        json={
+            "message": "我的肩膀也有点痛",
+            "thread_id": "thread_profile_before_llm_error",
+        },
+    ) as response:
+        body = response.read().decode()
+
+    events = parse_sse_events(body)
+    event_names = [event["event_name"] for event in events]
+    assert "profile_candidate" in event_names
+    assert event_names.index("profile_candidate") < event_names.index("error")
+    assert events[-1]["data"]["payload"]["code"] == "external_service_error"
+
+    candidates = client.get(
+        "/api/v1/profile/candidates", params={"user_id": "default_user"}
+    ).json()
+    assert len(candidates) == 1
+    assert "肩膀也有点痛" in candidates[0]["content"]
 
 
 def test_chat_stream_validation_error_is_sse_error_event() -> None:

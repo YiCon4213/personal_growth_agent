@@ -35,4 +35,6 @@ yarn-error.log*
 # Local logs and temporary files
 *.log
 *.tmp
+*.orig
+*.lnk
 *.swp
