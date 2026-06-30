@@ -1,0 +1,26 @@
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 12MB
+	}
+
+	basic_auth {
+		{$ACCESS_USER} {$ACCESS_PASSWORD_HASH}
+	}
+
+	reverse_proxy frontend:3000
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

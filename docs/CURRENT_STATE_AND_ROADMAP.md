@@ -1,6 +1,6 @@
 # Current State and Roadmap
 
-Last updated: 2026-06-28
+Last updated: 2026-06-30
 
 ## Documentation Lifecycle
 
@@ -24,14 +24,14 @@ The three core user journeys are:
 2. A fitness or health-related request is answered by the fitness agent with evidence retrieved from a professional RAG knowledge base and with appropriate safety boundaries.
 3. A life request is analyzed by an LLM; when a suitable MCP tool is available, the life agent calls it with validated arguments and applies approval rules for risky actions.
 
-The project is expected to support public deployment later. The target delivery form is a Docker Compose stack containing frontend, backend, and PostgreSQL with pgvector.
+The project now includes a hardened public deployment template: Caddy terminates HTTPS and provides a mandatory temporary access gate in front of the existing frontend, backend, and PostgreSQL/pgvector stack. Application authentication and multi-user behavior remain deferred.
 
 ## Current Architecture
 
 - Frontend: Next.js, React, TypeScript.
 - Backend: FastAPI and SSE.
 - Orchestration: LangGraph supervisor with learning, fitness, life, and general agents.
-- Database: PostgreSQL 16 with pgvector, exposed to host development on `localhost:5433`.
+- Database: PostgreSQL 16 with pgvector, bound to host loopback on `127.0.0.1:5433` for development and never published by the public edge.
 - Persistence: threads, messages, RAG documents/chunks, MCP metadata/calls, approvals, profile candidates/items, and Skill candidates/items.
 - Tests: deterministic unit, API, and end-to-end tests using fake external integrations where necessary.
 
@@ -43,11 +43,11 @@ The project is expected to support public deployment later. The target delivery 
 | Learning | DeepSeek generates a Pydantic-validated structured plan, followed by a streamed natural-language answer; deterministic builders remain as test/fallback fixtures outside the production chat path. | Continue evaluation and prompt hardening. |
 | Fitness | An explicit advanced RAG LangGraph fuses dense and BM25 ranks with RRF, applies a relevance gate, and returns at most three evidence chunks; the LLM receives only that evidence and a citation/safety prompt. Credentialed DashScope indexing/search was user-confirmed live. | Build the planned, separately scoped RAG evaluation corpus when requested. |
 | Embedding | Production uses the native DashScope SDK with `text-embedding-v3`, explicit 1024-dimensional dense output, document/query text types, batching, retries, concurrency limits, and content-hash caching. Deterministic vectors exist only in the injected test fake. Credentialed calls and index rebuild were user-confirmed live. | Continue operational monitoring; repeat quota-consuming rebuilds only when required. |
-| MCP | Official Python SDK lifecycle with stdio, Streamable HTTP, and legacy SSE; schema validation, command allowlist, audit records, and approval locking are implemented. | Live-test a remote Streamable HTTP server and add production observability during hardening. |
+| MCP | Official Python SDK lifecycle with stdio, Streamable HTTP, and legacy SSE; schema validation, audit records, and approval locking are implemented. Phase 5 adds command plus target-package/env/cwd restrictions and production HTTPS remote-host allowlisting. | Live-test one explicitly approved remote Streamable HTTP server and tune cold-start telemetry. |
 | Time MCP | uvx mcp-server-time was live-verified through the official stdio client; get_current_time and convert_time both succeeded. | Keep the server local and allowlisted; package availability remains an operational dependency. |
 | Skill | Deterministic summary every 10 user turns | LLM-generated structured reusable preference/decision template, still requiring user approval |
 | Conversation | Create/list/detail/rename/delete APIs and frontend navigation are implemented; bounded same-thread history is passed into LangGraph and the LLM. | Add richer search/archival only in a later scoped phase. |
-| Docker | Phase 4 is complete: production-oriented backend/frontend images and Compose start frontend, backend, and PostgreSQL/pgvector after a one-shot migration job. Full build, health, browser access, migration idempotence, and persistence were live-verified. | Public-deployment hardening remains Phase 5; authentication and multi-user behavior remain deferred. |
+| Deployment | Phase 4 images/migrations remain live-accepted. Phase 5 code adds loopback-only diagnostic ports, least-privilege containers, internal database networking, Caddy HTTPS, mandatory proxy Basic Auth, strict HTTP boundaries, readiness, JSON logs, backup tooling, and operations guidance. | Complete target-host DNS/ACME/firewall/off-host-backup and public smoke acceptance; application authentication remains a later phase. |
 
 ## Target Request Flow
 
@@ -199,8 +199,8 @@ Implementation status (2026-06-28): completed and live-accepted.
 - Automated verification passed: 77 backend tests, frontend ESLint, TypeScript checking, production build, Compose static validation, and `git diff --check`.
 - Live PostgreSQL verification passed: an existing volume baselined migration 001, applied 002 through 006, reported `vector(1024)`, exposed all four Phase 3 MCP columns, reran idempotently, and retained all six migration records after a container restart.
 - Full Compose acceptance passed after registry connectivity was restored: backend and frontend images built successfully; frontend, backend, and PostgreSQL were all healthy; the migration job reported 001 through 006 already applied; the frontend returned HTTP 200; the backend health endpoint returned `status=ok` with `environment=production`; and the user confirmed the application was usable through the browser.
-- Remaining risks belong to later or previously recorded acceptance work: container registries and `uvx` package availability are operational dependencies; remote Streamable HTTP remains pending; public exposure still requires Phase 5 hardening. Credentialed DashScope/index rebuild and DeepSeek MCP tool selection were user-confirmed live. Authentication and multi-user behavior remain out of scope.
-- Phase 5 may start once explicitly requested. Its opening check should confirm this documented baseline against current code and service state, but it does not need to repeat Phase 4 clean-build, persistence, or quota-consuming live tests unless related files changed, a regression is suspected, or the task explicitly requires them.
+- Remaining Phase 4 risks carry forward: container registries and `uvx` package availability are operational dependencies; remote Streamable HTTP remains pending. Credentialed DashScope/index rebuild and DeepSeek MCP tool selection were user-confirmed live.
+- Phase 5 started on explicit request on 2026-06-30. Phase 4 persistence and quota-consuming provider acceptance were reused; Phase 5 changes require fresh automated, image-build, hardened-Compose, and target-host deployment verification.
 
 ## 2026-06-28 Evidence-Based Reality Audit and Functional Fixes
 
@@ -236,7 +236,7 @@ The supervisor is a real LangGraph node, but its current route selection is dete
 | Approval | Non-low-risk MCP calls create persisted approval requests; approval executes under a row lock/executing state. | Fake transport verifies no pre-approval execution and exactly-once behavior. | Contract is automated; no new real high-risk action was invoked. |
 | Profile/Skill | Profile extraction is deterministic and approval-gated; Skill is a deterministic 10-turn text template, not executable code. | Real persistence logic with SQLite. | Profile candidate regression is offline verified. Skill remains intentionally simulated/template-based. |
 | PostgreSQL | PostgreSQL 16/pgvector persists threads, messages, RAG, MCP, approvals, profiles, and Skills. | Most tests use SQLite; PostgreSQL-specific vector SQL is not exercised there. | Existing Phase 4 migrations 001-006, vector(1024), restart, and persistence acceptance are reusable. |
-| Docker | Multi-stage frontend/backend images plus pgvector and one-shot checksum migration job. The frontend runtime now receives `BACKEND_URL` for the streaming Route Handler. | Compose config, frontend lint/type/build, and application tests passed. | Prior Phase 4 acceptance remains the baseline, but the changed frontend image was not rebuilt successfully in this session because the Docker build produced no output and was stopped; rebuild/smoke-test the image before the next container release. |
+| Deployment | Multi-stage frontend/backend images plus pgvector, checksum migration job, Caddy public override, loopback diagnostics, least-privilege runtime controls, readiness, limits, and structured logs. | Fake-provider backend security/application tests, frontend lint/type/build, and base/public Compose validation. | Phase 4 live acceptance remains reusable; the Phase 5 image/container smoke and real public-host acceptance are tracked below. |
 
 ### Reproduced issues and disposition
 
@@ -256,10 +256,36 @@ The supervisor is a real LangGraph node, but its current route selection is dete
 - **P3:** BM25 rebuilds the user-scoped corpus per request and remains a scale/performance risk.
 ### Phase 5: Public Deployment Hardening
 
-- Add HTTPS/reverse-proxy deployment guidance, strict CORS/host settings, rate limits, request-size limits, structured logs, health/readiness endpoints, backups, and secret management.
-- Restrict local stdio MCP commands to an allowlist; never accept arbitrary public command execution.
-- Add authentication only as a separate later phase when multi-user access is intentionally introduced.
+Implementation status (2026-06-30): completed in code and offline automation; target-host live acceptance remains pending.
 
+Completed:
+
+- Added Caddy public Compose override with automatic HTTPS, HTTP-to-HTTPS handling, JSON edge logs, a 12 MiB edge body limit, security headers, and mandatory temporary Basic Auth. This is deployment perimeter protection, not application login or multi-user support.
+- Bound PostgreSQL, backend, and frontend diagnostic ports to `127.0.0.1` by default; separated the database network; added non-root/read-only/drop-capability/no-new-privileges controls where compatible.
+- Added explicit Trusted Host and exact-origin CORS settings, production wildcard rejection, backend/frontend request-size enforcement, in-process per-client rate limiting with trusted-proxy CIDRs, request IDs, structured body-free access logs, API security headers, and production-disabled API docs.
+- Split liveness from database readiness (`/api/v1/health` and `/api/v1/health/ready`); Compose now gates backend health on readiness.
+- Tightened stdio MCP from command-name-only checks to command plus first target allowlisting, bare `uvx` target enforcement, environment-key restrictions, disabled working-directory/absolute-command defaults, and production HTTPS exact-host allowlisting for remote MCP.
+- Preserved the existing high-risk MCP approval and row-lock exactly-once boundary; no authentication, login, or multi-user application behavior was added.
+- Added public environment templates, secret-handling instructions, backup script with retention, isolated restore-drill instructions, firewall/topology guidance, deployment acceptance steps, update/rollback guidance, and explicit verification reuse rules.
+
+Automated verification and local container results are recorded after the final baseline in this document.
+
+Target-host live acceptance still required:
+
+- DNS and ACME certificate issuance/renewal, cloud firewall exposure, unauthenticated 401/authenticated 200 browser behavior, off-host encrypted backup and restore drill, log collection/alerting, and external/shared rate limiting.
+- Remote Streamable HTTP remains unverified. Time stdio cold start/package availability remains environment-dependent.
+- The built-in limiter is memory-local and per backend process; keep one worker or add an edge/shared limiter before horizontal scaling.
+- The temporary Basic Auth perimeter must remain until a separately scoped application-authentication phase is implemented.
+
+## Phase 5 Verification Record (2026-06-30)
+
+- Automated baseline passed without real provider usage: **95 backend tests**, frontend ESLint, TypeScript (`--noEmit --incremental false`), and Next.js production build.
+- Base and public Compose files parsed successfully with test-only environment values; `git diff --check` is part of the final pre-commit gate.
+- The backend image rebuilt successfully. The frontend image dependency stage failed twice against the official npm registry (`EIDLETIMEOUT`, then `ECONNRESET`); no unapproved mirror was substituted. The host Next.js production build passed, but a fresh frontend container image remains required before release.
+- Using the new backend image and the previously available frontend image, hardened local Compose recreation passed: PostgreSQL/backend/frontend were healthy, migrations 001-006 were current, backend/frontend used read-only root filesystems with all capabilities dropped and `no-new-privileges`, diagnostic ports resolved to loopback, readiness returned 200, and an untrusted Host returned 400.
+- The official `caddy:2.10-alpine` image validated `infra/Caddyfile`. A temporary local HTTPS smoke returned 401 without credentials, 200 with test-only Basic Auth, and 200 for authenticated readiness; the temporary Caddy service was stopped afterward.
+- No credentialed DeepSeek, DashScope, index rebuild, real Time MCP, or remote Streamable HTTP call was performed. Their unchanged prior live results remain reusable; remote Streamable HTTP is still pending.
+- No database schema change was needed in Phase 5, so no migration was added.
 ## Important Constraints
 
 - Do not implement login or multi-user behavior during the fixed-user phase.

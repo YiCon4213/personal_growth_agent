@@ -149,18 +149,52 @@ class OfficialMCPTransportClient:
     async def _transport(self, server: MCPServer, timeout_seconds: float):
         if server.transport in {"stdio", "stdio_bridge"}:
             command = (server.command or "").strip()
-            normalized = Path(command).name.lower()
+            command_name = Path(command).name
+            normalized = command_name.lower()
             if normalized.endswith(".exe"):
                 normalized = normalized[:-4]
-            if not command or normalized not in self.settings.mcp_stdio_command_allowlist:
+            command_has_path = command_name != command
+            if (
+                not command
+                or normalized not in self.settings.mcp_stdio_command_allowlist
+                or (command_has_path and not self.settings.mcp_stdio_allow_absolute_commands)
+            ):
                 raise MCPServiceError(
                     ErrorCode.VALIDATION_ERROR,
                     "MCP stdio command is not allowed.",
                     {"server_id": server.id, "command": normalized or None},
                 )
+
+            args = list(server.args or [])
+            target = Path(args[0]).name.lower() if args else ""
+            if not target or target not in self.settings.mcp_stdio_target_allowlist:
+                raise MCPServiceError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "MCP stdio target is not allowed.",
+                    {"server_id": server.id, "command": normalized, "target": target or None},
+                )
+            if normalized == "uvx" and args[0].lower() != target:
+                raise MCPServiceError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "uvx MCP targets must be bare allowlisted package names.",
+                    {"server_id": server.id, "target": target},
+                )
+            unexpected_env = set(server.env or {}) - self.settings.mcp_stdio_env_key_allowlist
+            if unexpected_env:
+                raise MCPServiceError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "MCP stdio environment contains non-allowlisted keys.",
+                    {"server_id": server.id, "env_keys": sorted(unexpected_env)},
+                )
+            if server.working_directory and not self.settings.mcp_stdio_allow_working_directory:
+                raise MCPServiceError(
+                    ErrorCode.VALIDATION_ERROR,
+                    "MCP stdio working directories are disabled.",
+                    {"server_id": server.id},
+                )
             parameters = StdioServerParameters(
                 command=command,
-                args=list(server.args or []),
+                args=args,
                 env=dict(server.env) if server.env else None,
                 cwd=server.working_directory,
             )
@@ -169,11 +203,27 @@ class OfficialMCPTransportClient:
             return
 
         parsed = urlparse(server.endpoint_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username:
             raise MCPServiceError(
                 ErrorCode.VALIDATION_ERROR,
-                "MCP HTTP endpoint must be an absolute http(s) URL.",
+                "MCP HTTP endpoint must be an absolute http(s) URL without embedded credentials.",
                 {"server_id": server.id},
+            )
+        allowed_remote_hosts = self.settings.mcp_remote_host_allowlist
+        if self.settings.environment.lower() == "production" and parsed.scheme != "https":
+            raise MCPServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "Production MCP HTTP endpoints must use HTTPS.",
+                {"server_id": server.id, "host": hostname},
+            )
+        if (self.settings.environment.lower() == "production" or allowed_remote_hosts) and (
+            hostname not in allowed_remote_hosts
+        ):
+            raise MCPServiceError(
+                ErrorCode.VALIDATION_ERROR,
+                "MCP remote host is not allowlisted.",
+                {"server_id": server.id, "host": hostname},
             )
         if server.transport == "sse":
             async with sse_client(

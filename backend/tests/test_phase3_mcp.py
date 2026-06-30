@@ -30,6 +30,8 @@ def store() -> DataStore:
 def time_server(store: DataStore) -> tuple[MCPServer, Settings]:
     settings = Settings(
         mcp_stdio_allowed_commands="python",
+        mcp_stdio_allowed_targets="fake_mcp_time_server.py",
+        mcp_stdio_allow_absolute_commands=True,
         mcp_timeout_seconds=15,
     )
     script = Path(__file__).parent / "fixtures" / "fake_mcp_time_server.py"
@@ -120,6 +122,35 @@ def test_stdio_request_requires_command() -> None:
         )
 
 
+
+def test_stdio_transport_rejects_non_allowlisted_uvx_target(store: DataStore) -> None:
+    server = store.create_mcp_server(
+        "default_user",
+        "arbitrary-package",
+        "",
+        transport=MCPTransport.STDIO,
+        command="uvx",
+        args=["not-approved-package"],
+    )
+
+    with pytest.raises(MCPServiceError, match="target is not allowed"):
+        OfficialMCPTransportClient(Settings()).list_tools(server)
+
+
+def test_production_remote_transport_requires_https_allowlisted_host(store: DataStore) -> None:
+    server = store.create_mcp_server(
+        "default_user",
+        "remote",
+        "https://unapproved.example/mcp",
+        transport=MCPTransport.STREAMABLE_HTTP,
+    )
+    settings = Settings(
+        environment="production",
+        mcp_remote_allowed_hosts="approved.example",
+    )
+
+    with pytest.raises(MCPServiceError, match="host is not allowlisted"):
+        OfficialMCPTransportClient(settings).list_tools(server)
 
 def test_deepseek_tool_call_contract_uses_provider_tools(monkeypatch) -> None:
     from app.services import llm_service as llm_module

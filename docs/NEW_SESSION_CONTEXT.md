@@ -10,7 +10,9 @@ This is a living handoff template, not a permanent snapshot. After every complet
 - docs/CURRENT_STATE_AND_ROADMAP.md
 - backend/.env.example
 - infra/docker-compose.yml
-- 与本次任务直接相关的现有代码和测试
+- infra/docker-compose.public.yml
+- infra/README.md
+- 与本次任务直接相关的现有代码、迁移和测试
 
 `docs/CURRENT_STATE_AND_ROADMAP.md` 是持续更新的项目事实源。开始任务前必须将文档描述与当前代码、数据库迁移和测试进行核对；如果旧会话内容与最新代码或路线图冲突，以已验证的代码和最新路线图为准。
 
@@ -39,16 +41,18 @@ Current verified state:
 - Skill remains a deterministic approved text template, not executable code. Phase 4 is complete and live-accepted: backend/frontend images built successfully; frontend, backend, and PostgreSQL were healthy; migrations 001-006 were current; frontend HTTP 200 and backend production health were verified; browser use was confirmed.
 - The 2026-06-28 reality audit confirmed deterministic keyword supervisor routing. Fitness routing now covers general exercise and shoulder/joint pain wording; profile candidates are committed before external provider work; empty MCP tool catalogs are reported explicitly; MCP creation attempts tool discovery and keeps failures actionable.
 - Frontend chat streaming uses a dedicated Next.js Route Handler instead of the buffering rewrite path. A delayed FakeLLM probe confirmed three separately delivered token chunks through the frontend proxy.
-- Frontend lint, TypeScript, production build, and Compose config passed. The frontend Docker image rebuild stalled without output and was stopped, so the changed image still needs a container rebuild/smoke test before release.
+- Frontend lint, TypeScript, production build, and Compose config passed after the post-Phase-4 SSE/UI fixes.
+- Phase 5 public-deployment hardening is implemented in code: loopback-only diagnostic ports, Caddy HTTPS plus mandatory temporary Basic Auth, strict Host/CORS/body/rate boundaries, request IDs and structured access logs, readiness, least-privilege containers, backup/restore operations, stdio MCP target restrictions, and production HTTPS remote-MCP host allowlisting.
+- Phase 5 automated verification and the local hardened image/container smoke result are recorded in the roadmap. Real public DNS/ACME/firewall, unauthenticated/authenticated edge behavior, off-host backup/restore, shared rate limiting, and remote Streamable HTTP still require environment-level acceptance.
 - The user-observed Time stdio 15-second discovery timeout was not re-run. Prior Time tool and credentialed DeepSeek tool-selection verification remain valid; environment/package cold-start behavior may still require operational tuning.
 
 目标改造顺序：
 
 1. Completed: conversation CRUD, bounded history, injectable DeepSeek, and real provider SSE.
-2. Implemented, live acceptance pending: external Embedding API and advanced RAG.
+2. Completed and user-confirmed live: external Embedding API, advanced RAG, and index rebuild.
 3. Completed in code: 官方 MCP SDK、stdio/Streamable HTTP、Time MCP、LLM 工具选择和 schema 参数校验；部分 live acceptance 见路线图。
 4. Completed and live-accepted: 前后端 Dockerfile、三服务 Compose、一键启动、可追踪迁移、健康检查、浏览器访问和数据持久性。
-5. 公网部署安全加固；登录和多用户仍放到更后面的独立阶段。
+5. Completed in code: 公网部署安全加固；目标主机 live acceptance 待完成，应用登录和多用户仍放到更后的独立阶段。
 
 工程要求：
 
@@ -64,5 +68,5 @@ Current verified state:
 - 后续会话必须先核对最新路线图与相关代码/迁移/测试，但可直接复用未受本次改动影响的既有真实验证；不得机械重复已通过的 live 或额度测试。只有相关实现/配置发生变化、怀疑回归或任务明确要求时，才重跑对应 live acceptance。
 
 本次具体任务：
-[Current task: credentialed DashScope/index rebuild and DeepSeek MCP tool selection are user-confirmed live. The frontend SSE buffering bug is fixed with a dedicated streaming Route Handler and delayed-FakeLLM verification. Semantic supervisor routing remains a separately scoped P2 improvement; do not start Phase 5 unless explicitly requested.]
+[Current task: Phase 5 hardening is implemented. Before release, complete target-host DNS/ACME/firewall, Basic Auth 401/200, browser/API, off-host backup and isolated restore acceptance. Reuse unchanged DeepSeek/DashScope/Time live verification; do not repeat quota tests mechanically. Semantic supervisor routing and application authentication remain separate future scopes.]
 ```

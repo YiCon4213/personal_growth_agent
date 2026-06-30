@@ -7,13 +7,13 @@
 - 新代码只能写入 `personal_growth_agent/`。
 - 不修改旧 `app/`、根目录旧 `main.py`、根目录旧 `langgraph.json`、根目录旧 `pyproject.toml`。
 - 当前后端数据库使用 Docker Postgres + pgvector，默认端口是 `localhost:5433`，不是 `5432`。
-- Phase 1-4 implementations are present. RAG uses DashScope text-embedding-v3 at 1024 dimensions; MCP uses the official SDK; the three-service Compose stack has completed live acceptance.
+- Phase 1-4 implementations are present and Phase 5 public-deployment hardening is implemented in code. RAG uses DashScope text-embedding-v3 at 1024 dimensions; MCP uses the official SDK; the original three-service Compose stack completed Phase 4 live acceptance.
 
 ## 产品策略与改造路线
 
 - 当前固定使用本地单用户 `default_user`，暂不实现注册、登录和用户管理。
 - 核心场景是学习计划、基于专业知识库的健身健康问答，以及由 LLM 判断并调用 MCP 工具的生活助手。
-- Phase 1-4 已实现；后续重点是尚未完成的外部集成验收与 Phase 5 公网部署安全加固。
+- Phase 1-5 已实现；公网部署环境的 DNS/HTTPS、防火墙、备份恢复与外部限流仍需在目标主机完成 live acceptance。
 - 当前实现能力、目标架构、阶段顺序和验收标准见 `docs/CURRENT_STATE_AND_ROADMAP.md`。
 - 开始新的开发会话时，可直接使用 `docs/NEW_SESSION_CONTEXT.md` 中的上下文指令。
 
@@ -37,6 +37,8 @@ personal_growth_agent/
     src/               # Next.js/React/TypeScript 前端源码
   infra/
     docker-compose.yml
+    docker-compose.public.yml
+    Caddyfile
     migrations/001_init_pgvector.sql ... 006_phase4_normalize_legacy_titles.sql
   docs/
 ```
@@ -49,6 +51,18 @@ personal_growth_agent/
 docker compose -f infra/docker-compose.yml up --build -d --wait
 ```
 
+## 公网部署
+
+公网部署使用基础 Compose 加 `infra/docker-compose.public.yml`，由 Caddy 暴露 80/443、自动管理 HTTPS，并强制临时 Basic Auth 门禁；PostgreSQL、后端和前端诊断端口默认仅绑定 `127.0.0.1`。先复制并填写不提交的 `backend/.env` 与 `infra/.env`：
+
+```bash
+cp backend/.env.example backend/.env
+cp infra/public.env.example infra/.env
+docker compose --env-file infra/.env -f infra/docker-compose.yml -f infra/docker-compose.public.yml config --quiet
+docker compose --env-file infra/.env -f infra/docker-compose.yml -f infra/docker-compose.public.yml up --build -d --wait
+```
+
+目标主机的 DNS、防火墙、证书、Basic Auth hash、备份/恢复演练和验收步骤见 `infra/README.md`。在应用认证作为独立阶段实现前，不要移除反向代理访问门禁。
 服务地址：
 
 - 前端：`http://localhost:3000`
