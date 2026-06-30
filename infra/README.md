@@ -87,7 +87,7 @@ curl -u 'ACCESS_USER:ACCESS_PASSWORD' https://YOUR_DOMAIN/api/v1/health
 curl -u 'ACCESS_USER:ACCESS_PASSWORD' https://YOUR_DOMAIN/api/v1/health/ready
 ```
 
-Confirm HTTP redirects to HTTPS, unauthenticated requests receive 401, authenticated frontend/API requests succeed, the certificate chain is valid, and security headers are present. Then exercise one non-quota fake/safe workflow. Existing DeepSeek/DashScope live acceptance does not need repetition unless provider configuration or integration code changed.
+Confirm HTTP redirects to HTTPS, unauthenticated requests receive 401, authenticated frontend/API requests succeed, the certificate chain is valid, and security headers are present. After the infrastructure checks pass, exercise one safe workflow with the providers configured for this deployment.
 
 ## Security controls and operational limits
 
@@ -132,11 +132,3 @@ Record restore time and verify `schema_migrations`, row counts, and representati
 ## Updating and rollback
 
 Before updating, take a backup and record the current Git commit and image digests. Pull reviewed code, run Compose config validation, build, and start with `--wait`. If application code regresses without a new migration, redeploy the previous commit/images. If a migration ran, do not edit or reverse SQL casually; restore into an isolated environment and follow a reviewed forward-fix or backup recovery plan.
-
-## Verification record
-
-- Phase 4 full-stack live acceptance on 2026-06-28 remains valid for migrations 001-006, persistence, image builds, health, and browser access.
-- Credentialed DashScope/index rebuild, Time stdio, and DeepSeek MCP tool selection were previously user-confirmed and were not mechanically repeated for Phase 5.
-- Phase 5 verification on 2026-06-30 passed 95 backend tests, frontend lint/type/host production build, base/public Compose parsing, backend image build, hardened local container recreation, Caddyfile validation, and temporary local HTTPS Basic Auth 401/200 smoke.
-- A fresh frontend image did not build because official npm registry access failed twice (`EIDLETIMEOUT`, then `ECONNRESET`). The runtime smoke therefore used the previously available frontend image; rebuild that image before release.
-- Public DNS, ACME certificate issuance, firewall policy, off-host backup execution, external rate limiting, and remote Streamable HTTP require deployment-environment live verification.
